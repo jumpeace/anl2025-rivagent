@@ -1,7 +1,7 @@
 """
 **Submitted to ANAC 2025 Automated Negotiation League**
-*Team* type your team name here
-*Authors* type your team member names with their emails here
+*Team* Natures
+*Authors* Jumpei Kawahara(s250312x@st.go.tuat.ac.jp)
 
 This code is free to use or update given that proper attribution is given to
 the authors and the ANAC 2025 ANL competition.
@@ -175,7 +175,6 @@ class Threshold:
     
     def calc(self, state):
         relative = 1 - state.relative_time ** self._opponent_model.calc_concession(state)
-        print('th::', self._opponent_model.calc_concession(state), relative)
         return self._u_model.calc_by_relative(relative)
 
 class SubNegotiator:
@@ -201,12 +200,6 @@ class SubNegotiator:
 
 class RivAgent(ANL2025Negotiator):
     def init(self):
-        # Make a dictionary that maps the index of the negotiation to the negotiator id. The index of the negotiation is the order in which the negotiation happen in sequence.
-        # self.id_dict = {}
-        # for neg_id in self.negotiators.keys():
-        #     index = self.negotiators[neg_id].context['index']
-        #     self.id_dict[index] = neg_id
-
         self.sub_negs = []
     
     @property
@@ -230,31 +223,15 @@ class RivAgent(ANL2025Negotiator):
             self, negotiator_id: str, state: SAOState, dest: str | None = None
     ) -> Outcome | None:
         self._update(negotiator_id, state)
-        bid = self.curr_sub_neg.proposal(state)
-        th = self.curr_sub_neg._threshold.calc(state)
-        print(f'[PROPOSE] neg={len(self.sub_negs)}, step={state.step}, bid={bid}, u={self.curr_sub_neg._u_model.ufun(bid)}, th={th}')
-        return bid
+        return self.curr_sub_neg.proposal(state)
 
     def respond(
             self, negotiator_id: str, state: SAOState, source: str | None = None
     ) -> ResponseType:
         self._update(negotiator_id, state)
-        res = self.curr_sub_neg.respond(state)
+        return self.curr_sub_neg.respond(state)
 
-        if res == ResponseType.ACCEPT_OFFER:
-            r = 'ACCEPT'
-        elif res ==  ResponseType.REJECT_OFFER:
-            r = 'REJECT'
-        else:
-            r = 'BAD-RESPONSE'
-        th = self.curr_sub_neg._threshold.calc(state)
-        print(f'[RESPOND] neg={len(self.sub_negs)}, step={state.step}, edge_bid={state.current_offer}, u={self.curr_sub_neg._u_model.ufun(state.current_offer)}, th={th}, res={r}')
-        return res
-
-# if you want to do a very small test, use the parameter small=True here. Otherwise, you can use the default parameters.
 if __name__ == "__main__":
-    from .helpers.runner import run_a_tournament
-    #Be careful here. When running directly from this file, relative imports give an error, e.g. import .helpers.helpfunctions.
-    #Change relative imports (i.e. starting with a .) at the top of the file. However, one should use relative imports when submitting the agent!
-
-    run_a_tournament(RivAgent, small=True)
+    from .helpers.runner import run_negotiation, visualize
+    results = run_negotiation()
+    visualize(results)
