@@ -199,7 +199,7 @@ class SubNegotiator:
             return ResponseType.ACCEPT_OFFER
         return ResponseType.REJECT_OFFER
 
-class RifalAgent(ANL2025Negotiator):
+class RivAgent(ANL2025Negotiator):
     def init(self):
         # Make a dictionary that maps the index of the negotiation to the negotiator id. The index of the negotiation is the order in which the negotiation happen in sequence.
         # self.id_dict = {}
@@ -257,4 +257,4 @@ if __name__ == "__main__":
     #Be careful here. When running directly from this file, relative imports give an error, e.g. import .helpers.helpfunctions.
     #Change relative imports (i.e. starting with a .) at the top of the file. However, one should use relative imports when submitting the agent!
 
-    run_a_tournament(RifalAgent, small=True)
+    run_a_tournament(RivAgent, small=True)

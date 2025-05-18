@@ -62,8 +62,8 @@ Agent Information
 -----------------
 Fill this section with your agent information
 
-  - Agent Name: rifal-agent
-  - Team Name: alpine-wings
+  - Agent Name: riv-agent
+  - Team Name: natures
   - Contact Email: s250312x@st.go.tuat.ac.jp
   - Affiliation: Tokyo University of Agriculture and Technology, Department of Electrical Engineering and Computer Science
   - Country: Japan
