@@ -1,6 +1,6 @@
 \documentclass{article}
-\title{MyAgent: An agent submitted to the ANAC 2025 ANL league}
-\author{Your Team Member names, affiliations and emails}
+\title{RivAgent: An agent submitted to the ANAC 2025 ANL league}
+\author{Jumpei Kawahara\\Tokyo University of Agriculture and Technology\\kawahara@katfuji.lab.tuat.ac.jp\\Japan}
 
 \begin{document}
 \maketitle
@@ -12,8 +12,14 @@
 	design and the evaluation of your agent. Submit the pdf file of your report.
 \end{abstract}
 \section{Introduction}
-\section{The Design of MyAgent}
+\section{Strategy}
 \subsection{Coordination Strategy Centeragent}
+\subsubsection{Utility Space}
+\begin{eqnarray}
+	{v}^{\prime}_i(o_i) = max(v^{\prime}_{i+1}(END), f_{i+1}(\{v^{\prime}_{i+1}(o_{i+1})\}_{o_{i+1}\in O_{ACC}}))\\
+	{v}^{\prime}_i(o_i) = u(o_i)\\
+	f_i(X) = avg(X) + (C_{aggressive} - C_{base\_risk} * {C_{risk\_growth}}^i) \times std(X)
+\end{eqnarray}
 \subsection{Bidding Strategy}
 \subsection{Acceptance Strategy}
 \section{Evaluation}
