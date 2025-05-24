@@ -41,48 +41,52 @@ class UtilArea:
 class UtilSpace:
     def __init__(self, ufun, outcomes, agreements, neg_index, neg_num):
         self.outcomes = outcomes
-        self.__init_outcome2zu(ufun, agreements, neg_index, neg_num, base_risk_coeff=0.0, risk_growth_coeff=1.0)
+        self.__init_outcome2zu(ufun, agreements, neg_index, neg_num
+            , aggressive_coeff = 0.9, base_risk_coeff = 0.2, risk_growth_coeff=1.4, my_weight=1.0)
         self.__init_areas(n_area_splits=5)
     
-    def __init_outcome2zu(self, ufun, agreements, neg_index, neg_num, base_risk_coeff, risk_growth_coeff):
+    def __init_outcome2zu(self, ufun, agreements, neg_index, neg_num
+        , aggressive_coeff, base_risk_coeff, risk_growth_coeff, my_weight):
+        def calc_zu__n_accepts_by_next(curr_outcome, curr_agreements, curr_neg_index):
+            if curr_neg_index == neg_num - 1:
+                bid = tuple(curr_agreements + [curr_outcome])
+                curr_zu = ufun(bid)
+                n_accepts_by_next = 0
+                return curr_zu, n_accepts_by_next
+            else:
+                next_accept_zus = []
+                next_end_neg_zu = None
+                for next_outcome in self.outcomes:
+                    next_zu, n_accepts_by_next2 = calc_zu__n_accepts_by_next( 
+                        curr_outcome = next_outcome, 
+                        curr_agreements = curr_agreements + [curr_outcome], 
+                        curr_neg_index = curr_neg_index+1, 
+                    )
+                    if next_outcome is None:
+                        next_end_neg_zu = next_zu
+                    else:
+                        next_accept_zus.append(next_zu)
+                curr_risk_coeff = base_risk_coeff * risk_growth_coeff ** (curr_neg_index - neg_index)
+                next_accept_zu = np.mean(next_accept_zus) + (aggressive_coeff - curr_risk_coeff) * np.std(next_accept_zus)
+                # print('  '*neg_index, outcome, max(next_accept_zu, next_end_neg_util))
+                curr_zu = max(next_accept_zu, next_end_neg_zu)
+                n_accepts_by_next = n_accepts_by_next2 + (1 if next_accept_zu > next_end_neg_zu else 0)
+                return curr_zu, n_accepts_by_next
+
         self.outcome2zu = {}
         for outcome in self.outcomes:
-            self.outcome2zu[str(outcome)] = self.__init_zu(ufun, 
-                outcome = outcome, 
-                agreements = agreements, 
-                neg_index = neg_index, 
-                neg_num = neg_num, 
-                risk_coeff = base_risk_coeff,
-                risk_growth_coeff = risk_growth_coeff,
+            zu, n_accepts_by_next = calc_zu__n_accepts_by_next( 
+                curr_outcome = outcome, 
+                curr_agreements = agreements, 
+                curr_neg_index = neg_index, 
             )
+            n_accepts = n_accepts_by_next + (1 if outcome is not None else 0)
+            accept_ratio = n_accepts / (neg_num - neg_index)
+            self.outcome2zu[str(outcome)] = my_weight * zu + (1 - my_weight) * accept_ratio
+
         self.outcome2zu = {k:v for k,v in \
             sorted(self.outcome2zu.items(), key=lambda x:x[1])}
-        # print(self.outcome2zu)
-    
-    def __init_zu(self, ufun, outcome, agreements, neg_index, neg_num, risk_coeff, risk_growth_coeff):
-        if neg_index == neg_num - 1:
-            bid = tuple(agreements + [outcome])
-            # print('  '*neg_index, outcome, ufun(bid))
-            return ufun(bid)
-        else:
-            next_accept_utils = []
-            next_end_neg_util = None
-            for next_outcome in self.outcomes:
-                next_util = self.__init_zu(ufun, 
-                    outcome = next_outcome, 
-                    agreements = agreements + [outcome], 
-                    neg_index = neg_index+1, 
-                    neg_num = neg_num, 
-                    risk_coeff = risk_coeff * risk_growth_coeff,
-                    risk_growth_coeff = risk_growth_coeff,
-                )
-                if next_outcome is None:
-                    next_end_neg_util = next_util
-                else:
-                    next_accept_utils.append(next_util)
-            next_accept_zu = np.mean(next_accept_utils) - risk_coeff * np.std(next_accept_utils)
-            # print('  '*neg_index, outcome, max(next_accept_zu, next_end_neg_util))
-            return max(next_accept_zu, next_end_neg_util)
+        print(self.outcome2zu)
     
     def __init_areas(self, n_area_splits):
         area_size = 1.0 / n_area_splits
@@ -165,24 +169,24 @@ class OpponentModel:
         self.__init_difficulty(util_space)
         self.n_smooth_max = int(n_steps * 0.1)
 
-        self.current_my_zu = None
+        self.current_zu = None
         self.zu_dists = []
     
     def __init_difficulty(self, util_space):
-        my_zu_std = util_space.calc_std()
-        if my_zu_std < 0.15:
+        zu_std = util_space.calc_std()
+        if zu_std < 0.15:
             self.difficulty = self.c2
-        elif my_zu_std < 0.3:
+        elif zu_std < 0.3:
             self.difficulty = 1.0
         else:
             self.difficulty = 1 / self.c2
     
     def update_when_proposal(self, my_outcome):
-        self.current_my_zu = self.util_space.get_from_outcome(my_outcome)
+        self.current_zu = self.util_space.get_from_outcome(my_outcome)
     
     def update_when_respond(self, opponent_outcome):
         opponent_zu = self.util_space.get_from_outcome(opponent_outcome)
-        self.zu_dists.append(abs(opponent_zu - self.current_my_zu))
+        self.zu_dists.append(abs(opponent_zu - self.current_zu))
     
     def calc_n_smooth(self, step):
         return int(min(step * 0.5, self.n_smooth_max))
@@ -286,4 +290,4 @@ if __name__ == "__main__":
     from .helpers.runner import run_negotiation, run_for_debug, visualize
     # run_for_debug(RivAgent, small=True)
     results = run_negotiation(RivAgent)
-    visualize(results)
+    # visualize(results)
