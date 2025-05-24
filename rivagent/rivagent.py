@@ -41,37 +41,53 @@ class UtilArea:
 class UtilSpace:
     def __init__(self, ufun, outcomes, agreements, neg_index, neg_num):
         self.outcomes = outcomes
-        self.__init_outcome2zu(ufun, outcomes, agreements, neg_index, neg_num, risk_param=0.0)
-        self.__init_areas(outcomes, n_area_splits=5)
+        self.__init_outcome2zu(ufun, agreements, neg_index, neg_num, base_risk_coeff=0.0, risk_growth_coeff=1.0)
+        self.__init_areas(n_area_splits=5)
     
-    def __init_outcome2zu(self, ufun, outcomes, agreements, neg_index, neg_num, risk_param):
+    def __init_outcome2zu(self, ufun, agreements, neg_index, neg_num, base_risk_coeff, risk_growth_coeff):
         self.outcome2zu = {}
-        if neg_index == neg_num - 1:
-            for o in outcomes:
-                bid = tuple(agreements + [o])
-                util = ufun(bid)
-                self.outcome2zu[str(o)] = util
-        else:
-            for o in outcomes:
-                next_accept_utils = []
-                next_end_neg_util = None
-                for no in outcomes:
-                    bid = tuple(agreements + [o, no] + [None]*(neg_num-neg_index-2))
-                    util = ufun(bid)
-                    if no is None:
-                        next_end_neg_util = util
-                    else:
-                        next_accept_utils.append(util)
-                next_accept_zu = np.mean(next_accept_utils) - risk_param * np.std(next_accept_utils)
-                zu = max(next_accept_zu, next_end_neg_util)
-                self.outcome2zu[str(o)] = zu
+        for outcome in self.outcomes:
+            self.outcome2zu[str(outcome)] = self.__init_zu(ufun, 
+                outcome = outcome, 
+                agreements = agreements, 
+                neg_index = neg_index, 
+                neg_num = neg_num, 
+                risk_coeff = base_risk_coeff,
+                risk_growth_coeff = risk_growth_coeff,
+            )
         self.outcome2zu = {k:v for k,v in \
             sorted(self.outcome2zu.items(), key=lambda x:x[1])}
+        # print(self.outcome2zu)
     
-    def __init_areas(self, outcomes, n_area_splits):
+    def __init_zu(self, ufun, outcome, agreements, neg_index, neg_num, risk_coeff, risk_growth_coeff):
+        if neg_index == neg_num - 1:
+            bid = tuple(agreements + [outcome])
+            # print('  '*neg_index, outcome, ufun(bid))
+            return ufun(bid)
+        else:
+            next_accept_utils = []
+            next_end_neg_util = None
+            for next_outcome in self.outcomes:
+                next_util = self.__init_zu(ufun, 
+                    outcome = next_outcome, 
+                    agreements = agreements + [outcome], 
+                    neg_index = neg_index+1, 
+                    neg_num = neg_num, 
+                    risk_coeff = risk_coeff * risk_growth_coeff,
+                    risk_growth_coeff = risk_growth_coeff,
+                )
+                if next_outcome is None:
+                    next_end_neg_util = next_util
+                else:
+                    next_accept_utils.append(next_util)
+            next_accept_zu = np.mean(next_accept_utils) - risk_coeff * np.std(next_accept_utils)
+            # print('  '*neg_index, outcome, max(next_accept_zu, next_end_neg_util))
+            return max(next_accept_zu, next_end_neg_util)
+    
+    def __init_areas(self, n_area_splits):
         area_size = 1.0 / n_area_splits
 
-        outcome_tmp = copy(outcomes)
+        outcome_tmp = copy(self.outcomes)
         self.areas = []
         for i in range(n_area_splits-1,-1,-1):
             min_zu = area_size * i
