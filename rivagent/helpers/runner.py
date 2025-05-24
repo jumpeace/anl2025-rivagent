@@ -18,6 +18,7 @@ from anl2025.ufun import CenterUFun
 from anl2025.negotiator import Boulware2025, Random2025, Linear2025
 from anl2025.scenario import make_multideal_scenario
 
+import numpy as np
 import matplotlib.pyplot as plt
 
 def run_for_debug(
@@ -125,6 +126,7 @@ def run_negotiation(centeragent):
     # print some results
     print(f"Center utility: {results.center_utility}")
     print(f"Edge Utilities: {results.edge_utilities}")
+    print(f"Score: {(results.center_utility + np.mean(results.edge_utilities)) / 2}")
     print(f"Agreement: {results.agreements}")
 
     # extra: for nicer lay-outing and more results:
@@ -143,7 +145,7 @@ def run_negotiation(centeragent):
         )
         for outcome in m.outcome_space.enumerate_or_sample():
             print(f"Outcome: {outcome} SUtility: {u(outcome)}")
-    print(f"Center Utility: {results.center_utility}")
+    # print(f"Center Utility: {results.center_utility}")
 
     return results
 
