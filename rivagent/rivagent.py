@@ -14,8 +14,7 @@ import numpy as np
 
 from negmas.outcomes import Outcome
 
-#be careful: When running directly from this file, change the relative import to an absolute import. When submitting, use relative imports.
-from .helpers.helperfunctions import get_current_negotiation_index, get_agreement_at_index, get_outcome_space_from_index \
+from .helpers.helperfunctions import get_current_negotiation_index, get_outcome_space_from_index \
     , get_agreement_at_index, get_nmi_from_index, did_negotiation_end, set_id_dict \
     , get_number_of_subnegotiations
 
@@ -40,18 +39,19 @@ class UtilArea:
         self.max_ru = None
 
 class UtilSpace:
-    def __init__(self, side_ufun, ufun, outcomes, agreements, neg_index, neg_num):
+    def __init__(self, ufun, outcomes, agreements, neg_index, neg_num):
         self.outcomes = outcomes
-        self.__init_outcome2zu(side_ufun, ufun, outcomes, agreements, neg_index, neg_num, risk_param=0.0)
+        self.__init_outcome2zu(ufun, outcomes, agreements, neg_index, neg_num, risk_param=0.0)
         self.__init_areas(outcomes, n_area_splits=5)
     
-    def __init_outcome2zu(self, side_ufun, ufun, outcomes, agreements, neg_index, neg_num, risk_param):
+    def __init_outcome2zu(self, ufun, outcomes, agreements, neg_index, neg_num, risk_param):
         self.outcome2zu = {}
         if neg_index == neg_num - 1:
             for o in outcomes:
-                self.outcome2zu[str(o)] = side_ufun(o)
+                bid = tuple(agreements + [o])
+                util = ufun(bid)
+                self.outcome2zu[str(o)] = util
         else:
-            # print(f'---- <neg_index={neg_index}> ----')
             for o in outcomes:
                 next_accept_utils = []
                 next_end_neg_util = None
@@ -64,14 +64,9 @@ class UtilSpace:
                         next_accept_utils.append(util)
                 next_accept_zu = np.mean(next_accept_utils) - risk_param * np.std(next_accept_utils)
                 zu = max(next_accept_zu, next_end_neg_util)
-                # print(f'-- {o} --')
-                # print(f'mean: {np.mean(next_accept_utils)}, std: {np.std(next_accept_utils)} ← {next_accept_utils}')
-                # print(f'next_accept_zu<{next_accept_zu}> = mean<{np.mean(next_accept_utils)}> - risk_param<{risk_param}> * std<{np.std(next_accept_utils)}>]')
-                # print(f'zu<{zu}> = max(accept_zu<{next_accept_zu}>, end_neg_u<{next_end_neg_util}>)')
                 self.outcome2zu[str(o)] = zu
         self.outcome2zu = {k:v for k,v in \
             sorted(self.outcome2zu.items(), key=lambda x:x[1])}
-        # exit()
     
     def __init_areas(self, outcomes, n_area_splits):
         area_size = 1.0 / n_area_splits
@@ -83,7 +78,7 @@ class UtilSpace:
 
             outcomes_in_area = []
             for o in outcome_tmp:
-                if self.get_zu_from_outcome(o) >= min_zu:
+                if self.get_from_outcome(o) >= min_zu:
                     outcomes_in_area.append(o)
             for o in outcomes_in_area:
                 outcome_tmp.remove(o)
@@ -94,10 +89,10 @@ class UtilSpace:
             if self.n_areas == 0:
                 max_zu = None
                 for o in outcomes_in_area:
-                    u = self.get_zu_from_outcome(o)
+                    u = self.get_from_outcome(o)
                     if (max_zu is None) or u > max_zu:
                         max_zu = u
-                max_zu = np.max([self.get_zu_from_outcome(o)
+                max_zu = np.max([self.get_from_outcome(o)
                     for o in outcomes_in_area])
             else:
                 max_zu = area_size * (i+1)
@@ -114,17 +109,17 @@ class UtilSpace:
             self.areas[i].max_ru = r
             self.areas[i+1].min_ru = r
     
-    def get_zu_from_outcome(self, outcome):
+    def get_from_outcome(self, outcome):
         return self.outcome2zu[str(outcome)]
     
     def get_outcome_near_threshold(self, threshold):
         for o in self.outcomes:
-            if self.get_zu_from_outcome(o) >= threshold:
+            if self.get_from_outcome(o) >= threshold:
                 return o
         else:
             return self.outcome2zu[self.outcome2zu.keys()[-1]]
     
-    def calc_zu_by_ratio(self, relative):
+    def calc_by_ratio(self, relative):
         for i in range(self.n_areas-1,-1,-1):
             min_ru = self.areas[i].min_ru
             if relative >= min_ru:
@@ -167,10 +162,10 @@ class OpponentModel:
             self.difficulty = 1 / self.c2
     
     def update_when_proposal(self, my_outcome):
-        self.current_my_zu = self.util_space.get_zu_from_outcome(my_outcome)
+        self.current_my_zu = self.util_space.get_from_outcome(my_outcome)
     
     def update_when_respond(self, opponent_outcome):
-        opponent_zu = self.util_space.get_zu_from_outcome(opponent_outcome)
+        opponent_zu = self.util_space.get_from_outcome(opponent_outcome)
         self.zu_dists.append(abs(opponent_zu - self.current_my_zu))
     
     def calc_n_smooth(self, step):
@@ -207,12 +202,11 @@ class Threshold:
     
     def calc(self, state):
         ratio = 1 - state.relative_time ** self.opponent_model.calc_concession(state)
-        return self.util_space.calc_zu_by_ratio(ratio)
+        return self.util_space.calc_by_ratio(ratio)
 
 class SideNegotiatorStrategy:
     def __init__(self, main_negotiator, negid, neg_index):
         self.util_space = UtilSpace(
-            side_ufun = main_negotiator.negotiators[negid].context['ufun'],
             ufun = main_negotiator.ufun, 
             outcomes = get_outcome_space_from_index(main_negotiator, neg_index),
             agreements = [get_agreement_at_index(main_negotiator,i) 
@@ -238,10 +232,10 @@ class SideNegotiatorStrategy:
     def respond(self, state):
         self.opponent_model.update_when_respond(state.current_offer)
         th = self.threshold.calc(state)
-        if th <= self.util_space.get_zu_from_outcome(None):
+        if th <= self.util_space.get_from_outcome(None):
             return ResponseType.END_NEGOTIATION
         
-        opponent_zu = self.util_space.get_zu_from_outcome(state.current_offer)
+        opponent_zu = self.util_space.get_from_outcome(state.current_offer)
         if opponent_zu >= th:
             return ResponseType.ACCEPT_OFFER
         return ResponseType.REJECT_OFFER
@@ -270,28 +264,10 @@ class RivAgent(ANL2025Negotiator):
     def respond(
             self, negotiator_id: str, state: SAOState, source: str | None = None
     ) -> ResponseType:
-        ret = self.current_side_neg_strategy.respond(state)
-
-        # from .helpers.helperfunctions import get_nmi_from_index
-        # if ret != ResponseType.REJECT_OFFER or state.step == get_nmi_from_index(self, self.current_neg_index).n_steps:
-        #     agreements, bid = [], []
-        #     for i in range(get_number_of_subnegotiations(self)):
-        #         if i > self.current_neg_index:
-        #             bid.append(None)
-        #             continue
-
-        #         if i < self.current_neg_index:
-        #             outcome = get_agreement_at_index(self, i)
-        #         else:
-        #             outcome = state.current_offer
-        #         agreements.append(outcome)
-        #         bid.append(outcome)
-        #     print(f'[{self.current_neg_index+1}/{get_number_of_subnegotiations(self)}]', bid, self.ufun(tuple(bid)))
-
-        return ret
+        return self.current_side_neg_strategy.respond(state)
 
 if __name__ == "__main__":
     from .helpers.runner import run_negotiation, run_for_debug, visualize
     # run_for_debug(RivAgent, small=True)
     results = run_negotiation(RivAgent)
-    # visualize(results)
+    visualize(results)
