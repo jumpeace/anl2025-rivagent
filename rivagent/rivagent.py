@@ -26,206 +26,102 @@ from negmas import (
     ResponseType, CategoricalIssue,
 )
 
-class UtilArea:
-    def __init__(self, min_zu, max_zu, outcomes):
-        self.min_zu = min_zu
-        self.zu_size = max_zu - min_zu
-        self.max_zu = max_zu
-
-        self.outcomes = outcomes
-        self.n_outcomes = len(outcomes)
-    
-        self.min_ru = None
-        self.max_ru = None
-
 class UtilSpace:
-    def __init__(self, ufun, outcomes, agreements, neg_index, neg_num):
+    def __init__(self, ufun, outcomes, agreements, neg_index, neg_num, coeff):
         self.outcomes = outcomes
-        self.__init_outcome2zu(ufun, agreements, neg_index, neg_num
-            , aggressive_coeff = 0.9, base_risk_coeff = 0.2, risk_growth_coeff=1.4, my_weight=1.0)
-        self.__init_areas(n_area_splits=5)
+        self.coeff = coeff
+        self.__init_outcome2util(ufun, agreements, neg_index, neg_num)
     
-    def __init_outcome2zu(self, ufun, agreements, neg_index, neg_num
-        , aggressive_coeff, base_risk_coeff, risk_growth_coeff, my_weight):
-        def calc_zu__n_accepts_by_next(curr_outcome, curr_agreements, curr_neg_index):
+    def __init_outcome2util(self, ufun, agreements, neg_index, neg_num):
+        def calc_util__n_accepts_by_next(curr_outcome, curr_agreements, curr_neg_index):
             if curr_neg_index == neg_num - 1:
                 bid = tuple(curr_agreements + [curr_outcome])
-                curr_zu = ufun(bid)
+                curr_util = ufun(bid)
                 n_accepts_by_next = 0
-                return curr_zu, n_accepts_by_next
+                return curr_util, n_accepts_by_next
             else:
-                next_accept_zus = []
-                next_end_neg_zu = None
+                next_accept_utils = []
+                next_end_neg_util = None
                 for next_outcome in self.outcomes:
-                    next_zu, n_accepts_by_next2 = calc_zu__n_accepts_by_next( 
+                    next_util, n_accepts_by_next2 = calc_util__n_accepts_by_next( 
                         curr_outcome = next_outcome, 
                         curr_agreements = curr_agreements + [curr_outcome], 
                         curr_neg_index = curr_neg_index+1, 
                     )
                     if next_outcome is None:
-                        next_end_neg_zu = next_zu
+                        next_end_neg_util = next_util
                     else:
-                        next_accept_zus.append(next_zu)
-                curr_risk_coeff = base_risk_coeff * risk_growth_coeff ** (curr_neg_index - neg_index)
-                next_accept_zu = np.mean(next_accept_zus) + (aggressive_coeff - curr_risk_coeff) * np.std(next_accept_zus)
-                # print('  '*neg_index, outcome, max(next_accept_zu, next_end_neg_util))
-                curr_zu = max(next_accept_zu, next_end_neg_zu)
-                n_accepts_by_next = n_accepts_by_next2 + (1 if next_accept_zu > next_end_neg_zu else 0)
-                return curr_zu, n_accepts_by_next
+                        next_accept_utils.append(next_util)
+                curr_risk = self.coeff['base_risk'] * self.coeff['risk_growth'] ** (curr_neg_index - neg_index)
+                next_accept_util = np.mean(next_accept_utils) + (self.coeff['optimism'] - curr_risk) * np.std(next_accept_utils)
+                curr_util = max(next_accept_util, next_end_neg_util)
+                n_accepts_by_next = n_accepts_by_next2 + (1 if next_accept_util > next_end_neg_util else 0)
+                return curr_util, n_accepts_by_next
 
-        self.outcome2zu = {}
+        self.outcome2util = {}
         for outcome in self.outcomes:
-            zu, n_accepts_by_next = calc_zu__n_accepts_by_next( 
+            util, n_accepts_by_next = calc_util__n_accepts_by_next( 
                 curr_outcome = outcome, 
                 curr_agreements = agreements, 
                 curr_neg_index = neg_index, 
             )
             n_accepts = n_accepts_by_next + (1 if outcome is not None else 0)
             accept_ratio = n_accepts / (neg_num - neg_index)
-            self.outcome2zu[str(outcome)] = my_weight * zu + (1 - my_weight) * accept_ratio
+            self.outcome2util[str(outcome)] = self.coeff['my_weight'] * util + (1 - self.coeff['my_weight']) * accept_ratio
 
-        self.outcome2zu = {k:v for k,v in \
-            sorted(self.outcome2zu.items(), key=lambda x:x[1])}
-        print(self.outcome2zu)
-    
-    def __init_areas(self, n_area_splits):
-        area_size = 1.0 / n_area_splits
-
-        outcome_tmp = copy(self.outcomes)
-        self.areas = []
-        for i in range(n_area_splits-1,-1,-1):
-            min_zu = area_size * i
-
-            outcomes_in_area = []
-            for o in outcome_tmp:
-                if self.get_from_outcome(o) >= min_zu:
-                    outcomes_in_area.append(o)
-            for o in outcomes_in_area:
-                outcome_tmp.remove(o)
-            
-            if len(outcomes_in_area) == 0:
-                continue
-
-            if self.n_areas == 0:
-                max_zu = None
-                for o in outcomes_in_area:
-                    u = self.get_from_outcome(o)
-                    if (max_zu is None) or u > max_zu:
-                        max_zu = u
-                max_zu = np.max([self.get_from_outcome(o)
-                    for o in outcomes_in_area])
-            else:
-                max_zu = area_size * (i+1)
-            
-            area = UtilArea(min_zu, max_zu, outcomes_in_area)
-            self.areas.insert(0, area)
-        
-        total_zu_size = sum([area.zu_size for area in self.areas], 0)
-        
-        self.areas[0].min_ru = 0.0
-        self.areas[self.n_areas-1].max_ru = 1.0
-        for i in range(self.n_areas-1):
-            r = self.areas[i].min_ru + (self.areas[i].zu_size / total_zu_size)
-            self.areas[i].max_ru = r
-            self.areas[i+1].min_ru = r
+        self.sorted_outcomes = sorted(self.outcomes, key=lambda o:self.outcome2util[str(o)])
+        self.sorted_accept_outcomes = [o for o in self.sorted_outcomes if o is not None]
+        self.max_accept_util = self.get_from_outcome(self.sorted_accept_outcomes[-1])
+        self.end_neg_util = self.get_from_outcome(None)
     
     def get_from_outcome(self, outcome):
-        return self.outcome2zu[str(outcome)]
+        return self.outcome2util[str(outcome)]
     
-    def get_outcome_near_threshold(self, threshold):
-        for o in self.outcomes:
-            if self.get_from_outcome(o) >= threshold:
-                return o
-        else:
-            return self.outcome2zu[self.outcome2zu.keys()[-1]]
-    
-    def calc_by_ratio(self, relative):
-        for i in range(self.n_areas-1,-1,-1):
-            min_ru = self.areas[i].min_ru
-            if relative >= min_ru:
-                r_in_area = (relative - min_ru) / (self.areas[i].max_ru - min_ru)
-                return self.areas[i].zu_size * r_in_area + self.areas[i].min_zu
-    
-    def calc_std(self):
-        return np.std(list(self.outcome2zu.values()))
-
-    def calc_max_dist(self):
-        all_zus = list(self.outcome2zu.values())
-        return np.max(all_zus) - np.min(all_zus)
-    
-    @property
-    def n_areas(self):
-        return len(self.areas)
-
-class OpponentModel:
-    def __init__(self, util_space, n_steps):
-        self.c1 = 1.3
-        self.c2 = 1.3
-        self.c3 = 0.2
-
-        self.util_space = util_space
-
-        self.max_dist = util_space.calc_max_dist()
-        self.__init_difficulty(util_space)
-        self.n_smooth_max = int(n_steps * 0.1)
-
-        self.current_zu = None
-        self.zu_dists = []
-    
-    def __init_difficulty(self, util_space):
-        zu_std = util_space.calc_std()
-        if zu_std < 0.15:
-            self.difficulty = self.c2
-        elif zu_std < 0.3:
-            self.difficulty = 1.0
-        else:
-            self.difficulty = 1 / self.c2
-    
-    def update_when_proposal(self, my_outcome):
-        self.current_zu = self.util_space.get_from_outcome(my_outcome)
-    
-    def update_when_respond(self, opponent_outcome):
-        opponent_zu = self.util_space.get_from_outcome(opponent_outcome)
-        self.zu_dists.append(abs(opponent_zu - self.current_zu))
-    
-    def calc_n_smooth(self, step):
-        return int(min(step * 0.5, self.n_smooth_max))
-    
-    def calc_alpha(self, step):
-        recent_d_std = np.std(self.zu_dists[-self.n_smooth_max:])
-        if recent_d_std < 0.05:
-            return 0.5 + self.c3
-        elif recent_d_std < 0.2:
-            return 0.5
-        else:
-            return 0.5 - self.c3
-    
-    def calc_concession(self, state):
-        if state.relative_time < 0.1:
-            return 2.0
+    def get_outcome_near(self, threshold, delta):
+        target_outcomes = []
+        min_util = None
+        for ao in self.sorted_accept_outcomes:
+            if len(target_outcomes) == 0:
+                util = self.get_from_outcome(ao)
+                if util >= threshold:
+                    target_outcomes.append(ao)
+                    min_util = util
+            else:
+                if self.get_from_outcome(ao) > min_util + delta:
+                    break
+                target_outcomes.append(ao)
         
-        start_dist_mean = np.mean(self.zu_dists[-self.calc_n_smooth(state.step):])
-        recent_dist_mean = np.mean(self.zu_dists[-self.calc_n_smooth(state.step)*2:])
-        alpha = self.calc_alpha(state.step)
-
-        dist_slope = (start_dist_mean - recent_dist_mean) / (start_dist_mean + 1e-6)
-        curr_dist_ratio = 1 - recent_dist_mean / self.max_dist
-        concession_tmp = alpha * dist_slope + (1-alpha) * curr_dist_ratio
-
-        # return self.c1 ** (concession_tmp*2-1) * self.difficulty
-        return 1.0
+        selected_index = np.random.choice(len(target_outcomes))
+        return target_outcomes[selected_index]
+    
+    def calc_by_ratio(self, ratio):
+        return self.max_accept_util * ratio
 
 class Threshold:
-    def __init__(self, util_space, opponent_model):
+    def __init__(self, util_space, coeff):
         self.util_space = util_space
-        self.opponent_model = opponent_model
+        self.coeff = coeff
     
     def calc(self, state):
-        ratio = 1 - state.relative_time ** self.opponent_model.calc_concession(state)
-        return self.util_space.calc_by_ratio(ratio)
+        ratio = 1 - state.relative_time ** (self.coeff['aggressive'])
+        ret = self.util_space.calc_by_ratio(ratio)
+        return ret
 
 class SideNegotiatorStrategy:
     def __init__(self, main_negotiator, negid, neg_index):
+        self.coeff = {
+            'util_space': {
+                'optimism': 0.9,
+                'base_risk': 0.2,
+                'risk_growth': 1.4,
+                'my_weight': 1.0,
+            },
+            'threshold': {
+                'aggressive': 2.0,
+            },
+            'proposal_delta': 0.2,
+        }
+
         self.util_space = UtilSpace(
             ufun = main_negotiator.ufun, 
             outcomes = get_outcome_space_from_index(main_negotiator, neg_index),
@@ -233,31 +129,26 @@ class SideNegotiatorStrategy:
                 for i in range(neg_index)],
             neg_index = neg_index,
             neg_num = get_number_of_subnegotiations(main_negotiator),
-        )
-        self.opponent_model = OpponentModel(
-            util_space = self.util_space,
-            n_steps = get_nmi_from_index(main_negotiator, neg_index).n_steps,
+            coeff = self.coeff['util_space'],
         )
         self.threshold = Threshold(
             util_space = self.util_space, 
-            opponent_model = self.opponent_model,
+            coeff = self.coeff['threshold'],
         )
     
     def proposal(self, state):
         th = self.threshold.calc(state)
-        target_outcome = self.util_space.get_outcome_near_threshold(th)
-        self.opponent_model.update_when_proposal(target_outcome)
-        return target_outcome
+        return self.util_space.get_outcome_near(th, self.coeff['proposal_delta'])
 
     def respond(self, state):
-        self.opponent_model.update_when_respond(state.current_offer)
         th = self.threshold.calc(state)
-        if th <= self.util_space.get_from_outcome(None):
-            return ResponseType.END_NEGOTIATION
+        # if th <= self.util_space.end_neg_util:
+        #     return ResponseType.END_NEGOTIATION
         
-        opponent_zu = self.util_space.get_from_outcome(state.current_offer)
-        if opponent_zu >= th:
-            return ResponseType.ACCEPT_OFFER
+        # opponent_util = self.util_space.get_from_outcome(state.current_offer)
+        # if opponent_util >= th:
+        #     return ResponseType.ACCEPT_OFFER
+        
         return ResponseType.REJECT_OFFER
 
 class RivAgent(ANL2025Negotiator):
