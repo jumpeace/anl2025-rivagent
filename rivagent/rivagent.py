@@ -34,6 +34,7 @@ class UtilSpace:
     
     def __init_outcome2util(self, ufun, agreements, neg_index, neg_num):
         def calc_util__n_accepts_by_next(curr_outcome, curr_agreements, curr_neg_index):
+            optimism = self.coeff['optimism_max'] * (1 - (curr_neg_index / neg_num))
             if curr_neg_index == neg_num - 1:
                 bid = tuple(curr_agreements + [curr_outcome])
                 curr_util = ufun(bid)
@@ -52,9 +53,9 @@ class UtilSpace:
                         next_end_neg_util = next_util
                     else:
                         next_accept_utils.append(next_util)
-                curr_risk = self.coeff['base_risk'] * self.coeff['risk_growth'] ** (curr_neg_index - neg_index)
-                next_accept_util = np.mean(next_accept_utils) + (self.coeff['optimism'] - curr_risk) * np.std(next_accept_utils)
-                curr_util = max(next_accept_util, next_end_neg_util)
+                next_accept_util = np.mean(next_accept_utils) + optimism * np.std(next_accept_utils)
+                curr_neg_ratio = curr_neg_index / (neg_num - 1) if neg_num > 1 else 0.0
+                curr_util = self.coeff['accept_ratio'] * next_accept_util + (1 - self.coeff['accept_ratio']) * next_end_neg_util
                 n_accepts_by_next = n_accepts_by_next2 + (1 if next_accept_util > next_end_neg_util else 0)
                 return curr_util, n_accepts_by_next
 
@@ -67,12 +68,17 @@ class UtilSpace:
             )
             n_accepts = n_accepts_by_next + (1 if outcome is not None else 0)
             accept_ratio = n_accepts / (neg_num - neg_index)
-            self.outcome2util[str(outcome)] = self.coeff['my_weight'] * util + (1 - self.coeff['my_weight']) * accept_ratio
+            rest_accepts_ratio = n_accepts_by_next / (neg_num - (neg_index + 1)) if neg_index < neg_num - 1 else 0.0
+            self.outcome2util[str(outcome)] = self.coeff['my_weight'] * util \
+                                            + self.coeff['n_accepts_weight'] * accept_ratio \
+                                            + self.coeff['rest_n_accepts_weight'] * (1.0 - rest_accepts_ratio)
 
         self.sorted_outcomes = sorted(self.outcomes, key=lambda o:self.outcome2util[str(o)])
         self.sorted_accept_outcomes = [o for o in self.sorted_outcomes if o is not None]
         self.max_accept_util = self.get_from_outcome(self.sorted_accept_outcomes[-1])
         self.end_neg_util = self.get_from_outcome(None)
+
+        print({o: f'{float(self.get_from_outcome(o)):.3f}' for o in self.sorted_outcomes})
     
     def get_from_outcome(self, outcome):
         return self.outcome2util[str(outcome)]
@@ -90,6 +96,7 @@ class UtilSpace:
                 if self.get_from_outcome(ao) > min_util + delta:
                     break
                 target_outcomes.append(ao)
+        # print(target_outcomes, len(target_outcomes))
         
         selected_index = np.random.choice(len(target_outcomes))
         return target_outcomes[selected_index]
@@ -111,15 +118,17 @@ class SideNegotiatorStrategy:
     def __init__(self, main_negotiator, negid, neg_index):
         self.coeff = {
             'util_space': {
-                'optimism': 0.9,
-                'base_risk': 0.2,
-                'risk_growth': 1.4,
-                'my_weight': 1.0,
+                'optimism_max': 1.0,            # optimism_max >= 0.0
+                'accept_ratio': 0.5,            # 0.0 <= accept_ratio <= 1.0
+                'my_weight': 0.7,               # 0.0 <= my_weight < 1.0
+                'n_accepts_weight': 0.15,        # 0.0 <= n_accepts_weight < 1.0
+                'rest_n_accepts_weight': 0.15,        # 0.0 <= rest_n_accepts_weight < 1.0
+                'my_weight': 0.87,               # 0.0 <= my_weight < 1.0
             },
             'threshold': {
-                'aggressive': 2.0,
+                'aggressive': 1.5,              # aggressive > 0
             },
-            'proposal_delta': 0.2,
+            'proposal_delta': 0.2,              # 0.0 < proposal_delta <= 1.0
         }
 
         self.util_space = UtilSpace(
@@ -138,16 +147,19 @@ class SideNegotiatorStrategy:
     
     def proposal(self, state):
         th = self.threshold.calc(state)
-        return self.util_space.get_outcome_near(th, self.coeff['proposal_delta'])
+        ret = self.util_space.get_outcome_near(th, self.coeff['proposal_delta'])
+        # print('proposal', th, ret)
+        return ret
 
     def respond(self, state):
         th = self.threshold.calc(state)
-        # if th <= self.util_space.end_neg_util:
-        #     return ResponseType.END_NEGOTIATION
+        if th <= self.util_space.end_neg_util:
+            # print('respond', th, self.util_space.end_neg_util)
+            return ResponseType.END_NEGOTIATION
         
-        # opponent_util = self.util_space.get_from_outcome(state.current_offer)
-        # if opponent_util >= th:
-        #     return ResponseType.ACCEPT_OFFER
+        opponent_util = self.util_space.get_from_outcome(state.current_offer)
+        if opponent_util >= th:
+            return ResponseType.ACCEPT_OFFER
         
         return ResponseType.REJECT_OFFER
 
