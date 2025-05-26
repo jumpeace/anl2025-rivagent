@@ -77,8 +77,6 @@ class UtilSpace:
         self.sorted_accept_outcomes = [o for o in self.sorted_outcomes if o is not None]
         self.max_accept_util = self.get_from_outcome(self.sorted_accept_outcomes[-1])
         self.end_neg_util = self.get_from_outcome(None)
-
-        print({o: f'{float(self.get_from_outcome(o)):.3f}' for o in self.sorted_outcomes})
     
     def get_from_outcome(self, outcome):
         return self.outcome2util[str(outcome)]
@@ -96,7 +94,6 @@ class UtilSpace:
                 if self.get_from_outcome(ao) > min_util + delta:
                     break
                 target_outcomes.append(ao)
-        # print(target_outcomes, len(target_outcomes))
         
         selected_index = np.random.choice(len(target_outcomes))
         return target_outcomes[selected_index]
@@ -148,13 +145,11 @@ class SideNegotiatorStrategy:
     def proposal(self, state):
         th = self.threshold.calc(state)
         ret = self.util_space.get_outcome_near(th, self.coeff['proposal_delta'])
-        # print('proposal', th, ret)
         return ret
 
     def respond(self, state):
         th = self.threshold.calc(state)
         if th <= self.util_space.end_neg_util:
-            # print('respond', th, self.util_space.end_neg_util)
             return ResponseType.END_NEGOTIATION
         
         opponent_util = self.util_space.get_from_outcome(state.current_offer)
