@@ -98,18 +98,19 @@ def run_negotiation(centeragent):
     # agents:
     edgeagents = [
         Random2025,
-        Random2025,
-        Linear2025,
         Boulware2025,
+        Linear2025,
+        Conceder2025,
     ]
 
-    # scenario = load_example_scenario("TargetQuantity")
-    scenario = load_example_scenario("dinners")
-
-    # print(scenario)
+    scenarios = [
+        MultidealScenario.from_folder(pathlib.Path("./official_test_scenarios/dinners")),
+        MultidealScenario.from_folder(pathlib.Path("./official_test_scenarios/TargetQuantity_example")),
+        MultidealScenario.from_folder(pathlib.Path("./official_test_scenarios/job_hunt_target")),
+    ]
 
     results = run_session(
-        scenario=scenario,
+        scenario=scenarios[0],
         center_type=centeragent,
         edge_types=edgeagents,  # type: ignore
         nsteps=10,
