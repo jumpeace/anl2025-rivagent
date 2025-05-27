@@ -26,75 +26,148 @@ from negmas import (
     ResponseType, CategoricalIssue,
 )
 
-class UtilSpace:
-    def __init__(self, ufun, side_ufun, outcomes, agreements, neg_index, neg_num, coeff):
-        self.outcomes = outcomes
-        self.coeff = coeff
-        self.__init_outcome2util(ufun, side_ufun, agreements, neg_index, neg_num)
+class OutcomeNode:
+    def __init__(self, config, agreements, neg_index, parent=None):
+        self.config = config
+
+        self.neg_index = neg_index
+        self.parent = parent
+
+        self.agreements = agreements
+        if self.parent is not None:
+            self.outcome = agreements[-1]
+            self.outcome_index = self.config['outcomes'].index(self.outcome)
+        
+        self.children = []
+        if not self.is_leaf:
+            for child_outcome in self.config['outcomes']:
+                node = OutcomeNode(self.config, 
+                    agreements = self.agreements + [child_outcome],
+                    neg_index = self.neg_index + 1, 
+                    parent = self,
+                )
+                self.children.append(node)
     
-    def __init_outcome2util(self, ufun, side_ufun, agreements, neg_index, neg_num):
-        def calc_util__n_accepts_by_next(curr_outcome, curr_agreements, curr_neg_index):
-            optimism = self.coeff['optimism_max'] * (1 - (curr_neg_index / neg_num))
-            if curr_neg_index == neg_num - 1:
-                if neg_num > 1:
-                    bid = tuple(curr_agreements + [curr_outcome])
-                    curr_util = ufun(bid)
-                else:
-                    curr_util = side_ufun(curr_outcome)
-                n_accepts_by_next = 0
-                return curr_util, n_accepts_by_next
+    @property
+    def is_root(self):
+        return self.parent is None
+    
+    @property
+    def rest_neg_num(self):
+        return (self.config['neg_num'] - 1) - self.neg_index
+    
+    @property
+    def is_leaf(self):
+        if self.is_root:
+            return False
+        if self.rest_neg_num == 0:
+            return True
+        if self.outcome is None:
+            return True
+        return False
+    
+    def calc_optimism(self):
+        return self.config['coeff']['optimism_max'] * (1 - (self.neg_index / self.config['neg_num']))
+    
+    def calc_pu(self):
+        if self.is_leaf:
+            if self.config['neg_num'] > 1:
+                bid = tuple(self.agreements + [None] * self.rest_neg_num)
+                return self.config['ufun'](bid)
             else:
-                next_accept_utils = []
-                next_end_neg_util = None
-                for next_outcome in self.outcomes:
-                    next_util, n_accepts_by_next2 = calc_util__n_accepts_by_next( 
-                        curr_outcome = next_outcome, 
-                        curr_agreements = curr_agreements + [curr_outcome], 
-                        curr_neg_index = curr_neg_index+1, 
-                    )
-                    if next_outcome is None:
-                        next_end_neg_util = next_util
-                    else:
-                        next_accept_utils.append(next_util)
-                next_accept_util = np.mean(next_accept_utils) + optimism * np.std(next_accept_utils)
-                curr_neg_ratio = curr_neg_index / (neg_num - 1) if neg_num > 1 else 0.0
-                curr_util = self.coeff['accept_ratio'] * next_accept_util + (1 - self.coeff['accept_ratio']) * next_end_neg_util
-                n_accepts_by_next = n_accepts_by_next2 + (1 if next_accept_util > next_end_neg_util else 0)
-                return curr_util, n_accepts_by_next
+                return self.config['side_ufun'](self.outcome)
 
-        self.outcome2util = {}
-        for outcome in self.outcomes:
-            util, n_accepts_by_next = calc_util__n_accepts_by_next( 
-                curr_outcome = outcome, 
-                curr_agreements = agreements, 
-                curr_neg_index = neg_index, 
-            )
-            n_accepts = n_accepts_by_next + (1 if outcome is not None else 0)
-            accept_ratio = n_accepts / (neg_num - neg_index)
-            rest_accepts_ratio = n_accepts_by_next / (neg_num - (neg_index + 1)) if neg_index < neg_num - 1 else 0.0
-            self.outcome2util[str(outcome)] = self.coeff['my_weight'] * util \
-                                            + self.coeff['n_accepts_weight'] * accept_ratio \
-                                            + self.coeff['rest_n_accepts_weight'] * (1.0 - rest_accepts_ratio)
+        child_end_neg_pu = None
+        child_accept_pus = []
+        for child in self.children:
+            child_pu = child.calc_pu()
+            if child.outcome is None:
+                child_end_neg_pu = child_pu
+            else:
+                child_accept_pus.append(child_pu)
+        
+        child_accept_pu = np.mean(child_accept_pus) + self.calc_optimism() * np.std(child_accept_pus)
+        pu = max(child_accept_pu, child_end_neg_pu)
+        self.do_accept = child_accept_pu >= child_end_neg_pu
+        return pu
+    
+    def calc_sorted_bid_rus(self):
+        if self.is_leaf:
+            bid = list(self.agreements + [None] * self.rest_neg_num)
+            if self.config['neg_num'] > 1:
+                ru = self.config['ufun'](tuple(bid))
+                return [{'bid': bid, 'ru': ru}]
+            else:
+                ru = self.config['side_ufun'](bid[0])
+                return [{'bid': bid, 'ru': ru}]
 
-        self.sorted_outcomes = sorted(self.outcomes, key=lambda o:self.outcome2util[str(o)])
+        if self.do_accept:
+            bid_rus = []
+            for child in self.children:
+                if child.outcome is not None:
+                    bid_rus += child.calc_sorted_bid_rus()
+        else:
+            for child in self.children:
+                if child.outcome is None:
+                    bid_rus = child.calc_sorted_bid_rus()
+                    break
+
+        return sorted(bid_rus, key=lambda x:x['ru'], reverse=True)
+
+class RivUtilSpace:
+    def __init__(self, ufun, side_ufun, outcomes, agreements, neg_index, neg_num, coeff):
+        self.config = {
+            'ufun': ufun,
+            'side_ufun': side_ufun,
+            'neg_num': neg_num,
+            'outcomes': outcomes, 
+            'coeff': coeff,
+        }
+
+        self.dummy_head = OutcomeNode(self.config, agreements, neg_index-1)
+        self.build_outcome2u()
+    
+    def build_outcome2u(self):
+        self.outcome2u = {}
+        for outcome_node in self.dummy_head.children:
+            pu = outcome_node.calc_pu()
+
+            sorted_bid_rus = []
+            for bid_ru_tmp in outcome_node.calc_sorted_bid_rus():
+                bid = sorted(bid_ru_tmp['bid'], key=lambda x:str(x))
+                if bid in [x['bid'] for x in sorted_bid_rus]:
+                    continue
+                sorted_bid_rus.append({'bid': bid, 'ru': bid_ru_tmp['ru']})
+            accept_array = [int(outcome is not None) for outcome in sorted_bid_rus[0]['bid']]
+            accept_ratio = sum(accept_array, 0) / len(accept_array)
+            rest_future_accept_ratio = sum(accept_array[:-1], 0) / (len(accept_array) - 1) \
+                if len(accept_array) > 1 else 0
+
+            u = self.config['coeff']['my_weight'] * pu \
+                + self.config['coeff']['n_accepts_weight'] * accept_ratio \
+                + self.config['coeff']['rest_n_accepts_weight'] * (1.0 - rest_future_accept_ratio)
+            self.outcome2u[str(outcome_node.outcome)] = u
+
+        self.sorted_outcomes = sorted(self.config['outcomes'], key=lambda o:self.get_from_outcome(o))
         self.sorted_accept_outcomes = [o for o in self.sorted_outcomes if o is not None]
-        self.max_accept_util = self.get_from_outcome(self.sorted_accept_outcomes[-1])
-        self.end_neg_util = self.get_from_outcome(None)
+        self.max_accept_u = self.get_from_outcome(self.sorted_accept_outcomes[-1])
+        self.end_neg_u = self.get_from_outcome(None)
+        # print({str(o):f'{self.get_from_outcome(o):.3f}' for o in self.sorted_outcomes})
     
     def get_from_outcome(self, outcome):
-        return self.outcome2util[str(outcome)]
+        return self.outcome2u[str(outcome)]
     
     def get_outcome_near(self, threshold, delta):
         target_outcomes = []
-        min_util = None
+        min_u = None
         for ao in self.sorted_accept_outcomes:
             if len(target_outcomes) == 0:
-                util = self.get_from_outcome(ao)
-                if util >= threshold:
+                u = self.get_from_outcome(ao)
+                if u >= threshold:
                     target_outcomes.append(ao)
-                    min_util = util
+                    min_u = u
             else:
-                if self.get_from_outcome(ao) > min_util + delta:
+                if self.get_from_outcome(ao) > min_u + delta:
                     break
                 target_outcomes.append(ao)
         
@@ -102,7 +175,7 @@ class UtilSpace:
         return target_outcomes[selected_index]
     
     def calc_by_ratio(self, ratio):
-        return self.max_accept_util * ratio
+        return self.max_accept_u * ratio
 
 class Threshold:
     def __init__(self, util_space, coeff):
@@ -119,11 +192,9 @@ class SideNegotiatorStrategy:
         self.coeff = {
             'util_space': {
                 'optimism_max': 1.0,            # optimism_max >= 0.0
-                'accept_ratio': 0.5,            # 0.0 <= accept_ratio <= 1.0
                 'my_weight': 0.7,               # 0.0 <= my_weight < 1.0
                 'n_accepts_weight': 0.15,        # 0.0 <= n_accepts_weight < 1.0
                 'rest_n_accepts_weight': 0.15,        # 0.0 <= rest_n_accepts_weight < 1.0
-                'my_weight': 0.87,               # 0.0 <= my_weight < 1.0
             },
             'threshold': {
                 'aggressive': 1.5,              # aggressive > 0
@@ -131,7 +202,7 @@ class SideNegotiatorStrategy:
             'proposal_delta': 0.2,              # 0.0 < proposal_delta <= 1.0
         }
 
-        self.util_space = UtilSpace(
+        self.util_space = RivUtilSpace(
             ufun = main_negotiator.ufun, 
             side_ufun = main_negotiator.negotiators[negid].context['ufun'],
             outcomes = get_outcome_space_from_index(main_negotiator, neg_index),
@@ -153,11 +224,11 @@ class SideNegotiatorStrategy:
 
     def respond(self, state):
         th = self.threshold.calc(state)
-        if th <= self.util_space.end_neg_util:
+        if th <= self.util_space.end_neg_u:
             return ResponseType.END_NEGOTIATION
         
-        opponent_util = self.util_space.get_from_outcome(state.current_offer)
-        if opponent_util >= th:
+        opponent_u = self.util_space.get_from_outcome(state.current_offer)
+        if opponent_u >= th:
             return ResponseType.ACCEPT_OFFER
         
         return ResponseType.REJECT_OFFER
