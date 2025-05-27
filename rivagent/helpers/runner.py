@@ -15,7 +15,7 @@ from anl2025 import (
 )
 from anl2025.tournament import anl2025_tournament
 from anl2025.ufun import CenterUFun
-from anl2025.negotiator import Boulware2025, Random2025, Linear2025
+from anl2025.negotiator import Boulware2025, Random2025, Linear2025, Conceder2025
 from anl2025.scenario import make_multideal_scenario
 
 import numpy as np
@@ -149,20 +149,28 @@ def run_negotiation(centeragent):
 
     return results
 
-def run_tournament():
-    generated_scenario = make_multideal_scenario(nedges=3)
-    path = pathlib.Path("../official_test_scenarios/dinners")
-    scenario = MultidealScenario.from_folder(path)
+def run_tournament(myagent):
+    scenarios = [
+        MultidealScenario.from_folder(pathlib.Path("./official_test_scenarios/dinners")),
+        MultidealScenario.from_folder(pathlib.Path("./official_test_scenarios/TargetQuantity_example")),
+        MultidealScenario.from_folder(pathlib.Path("./official_test_scenarios/job_hunt_target")),
+    ]
+    competitors = (
+        myagent,
+        Boulware2025,
+        Linear2025,
+        Conceder2025,
+    )
 
     results = anl2025_tournament(
-        scenarios=[scenario, generated_scenario],
+        scenarios=scenarios,
         n_jobs=-1,
-        competitors=(Random2025, Boulware2025, Linear2025),
+        competitors=competitors,
         verbose=False,
         #  no_double_scores=False,
     )
-    print(results.final_scores)
-    print(results.weighted_average)
+    print({k:f'{v:.3f}' for k,v in sorted(results.final_scores.items(), key=lambda x: x[1], reverse=True)})
+    print({k:f'{v:.3f}' for k,v in sorted(results.weighted_average.items(), key=lambda x: x[1], reverse=True)})
 
     return results
 
