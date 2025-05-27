@@ -1,4 +1,6 @@
 \documentclass{article}
+\usepackage{amsmath}
+
 \title{RivAgent: An agent submitted to the ANAC 2025 ANL league}
 \author{Jumpei Kawahara\\Tokyo University of Agriculture and Technology\\kawahara@katfuji.lab.tuat.ac.jp\\Japan}
 
@@ -11,18 +13,61 @@
 	text. You can and are encouraged to use figures to illustrate the general
 	design and the evaluation of your agent. Submit the pdf file of your report.
 \end{abstract}
+
 \section{Introduction}
+本稿では、ANAC 2025 Automated Negotiation League に提出した交渉エージェント「RivAgent」について述べる。
+RivAgentは、複数回の交渉を通じて利得を最大化することを目指し、時間的な変化と将来予測を考慮した戦略を採用している。
+交渉ごとに異なる状況判断を行い、全体最適を志向する点が特徴である。
+
 \section{Strategy}
-\subsection{Coordination Strategy Centeragent}
-\subsubsection{Utility Space}
+本エージェントは、各交渉を独立に捉えつつも、全体として合理的な合意を形成するための一連の戦略を実装している。
+以下にその中核的な要素を説明する。
+
+\subsection{Utility}
+提案や応答の判断材料として、各選択肢がもたらす利得を算出する。
+利得の評価では、現在の交渉だけでなく、後続の交渉での合意可能性や、その変動幅も考慮に入れている。
+将来の交渉でどのような結果が得られるかを予測し、それに基づいて現在の選択肢の価値を評価する。
+
+また、将来の結果に対して楽観的に見積もる度合い（楽観さ）を導入しており、交渉が進行するほどその影響を減少させることで、合理的な期待値を形成している。
+
 \begin{eqnarray}
-	{v}^{\prime}_i(o_i) = max(v^{\prime}_{i+1}(END), f_{i+1}(\{v^{\prime}_{i+1}(o_{i+1})\}_{o_{i+1}\in O_{ACC}}))\\
-	{v}^{\prime}_i(o_i) = u(o_i)\\
-	f_i(X) = avg(X) + (C_{aggressive} - C_{base\_risk} * {C_{risk\_growth}}^i) \times std(X)
+	&&v(\{o_1,..,o_i\}) = w_u u^{\prime}(i) + w_{r}\Phi(i) + w_{r^{\prime}}(1-\Phi(i+1))\\
+	&&w_u + w_r + w_{r^{\prime}} = 1
 \end{eqnarray}
+\begin{eqnarray}
+	&&u^{\prime}(i,o) = w_a\;f(U_{AC}^{\prime}(i+1)) + (1-w_a)\;u^{\prime}(i+1,EN)\\
+	&&u^{\prime}(m,o_m) = u(\{o_1,..,o_m\})\\
+	&&U_{AC}^{\prime}(i) = \{u^{\prime}(i,AC_1),..,u^{\prime}(i,AC_n)\}\\
+	&&O_{AC} = \{AC_1,..,AC_n\}\\
+	&&EN\in O, EN\notin O_{AC}\\
+	&&f(U_{AC}^{\prime}(i)) = \text{mean}[U_{AC}^{\prime}(i)] + \rho\;\text{std}[U_{AC}^{\prime}(i)]
+\end{eqnarray}
+
+\subsection{Concession Curve}
+時間の経過に応じて、どの程度まで妥協できるかの基準を滑らかに変化させている。
+この基準は、交渉の残り時間が少なくなるにつれて下がっていく設計になっており、交渉初期は強気に、後半は柔軟に対応する。
+
+\begin{eqnarray}
+	f(t) = U_{max} - (U_{max} - U_{min})\left(\frac{t}{T}\right)^{\kappa}
+\end{eqnarray}
+
 \subsection{Bidding Strategy}
+提案を行う際には、現在の妥協基準をもとに、適度な利得が期待できる選択肢を選び出す。
+利得が高すぎず、かといって低すぎない範囲から、ランダム性を伴って選ばれることで、一定の多様性と戦略的な読み合いが可能になるよう工夫されている。
+
 \subsection{Acceptance Strategy}
+相手からの提案に対しては、その価値が現在の基準を満たしていれば受諾し、そうでなければ拒否する。
+また、基準値が将来的な合意を上回るような場合には、交渉自体の終了を選択することで、不利な取引を避ける設計となっている。
+
+\begin{eqnarray}
+	&&\text{if}\;u^{\prime}(\{o_1,..,o_i^{\text{opponent}}\}) > f(t)\;\;\;\text{ACCEPT}\\
+	&&\text{else if}\;u^{\prime}(\{o_1,..,o_i^{\text{opponent}}\}) < u^{\prime}(\{o_1,..,EN\})\;\;\;\text{END NEG}\\
+	&&\text{else}\;\;\;\text{REJECT}
+\end{eqnarray}
+
 \section{Evaluation}
+
 \section{Lessons and Suggestions}
+
 \section*{Conclusions}
 \end{document}
