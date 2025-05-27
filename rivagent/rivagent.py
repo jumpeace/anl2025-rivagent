@@ -27,17 +27,20 @@ from negmas import (
 )
 
 class UtilSpace:
-    def __init__(self, ufun, outcomes, agreements, neg_index, neg_num, coeff):
+    def __init__(self, ufun, side_ufun, outcomes, agreements, neg_index, neg_num, coeff):
         self.outcomes = outcomes
         self.coeff = coeff
-        self.__init_outcome2util(ufun, agreements, neg_index, neg_num)
+        self.__init_outcome2util(ufun, side_ufun, agreements, neg_index, neg_num)
     
-    def __init_outcome2util(self, ufun, agreements, neg_index, neg_num):
+    def __init_outcome2util(self, ufun, side_ufun, agreements, neg_index, neg_num):
         def calc_util__n_accepts_by_next(curr_outcome, curr_agreements, curr_neg_index):
             optimism = self.coeff['optimism_max'] * (1 - (curr_neg_index / neg_num))
             if curr_neg_index == neg_num - 1:
-                bid = tuple(curr_agreements + [curr_outcome])
-                curr_util = ufun(bid)
+                if neg_num > 1:
+                    bid = tuple(curr_agreements + [curr_outcome])
+                    curr_util = ufun(bid)
+                else:
+                    curr_util = side_ufun(curr_outcome)
                 n_accepts_by_next = 0
                 return curr_util, n_accepts_by_next
             else:
@@ -130,6 +133,7 @@ class SideNegotiatorStrategy:
 
         self.util_space = UtilSpace(
             ufun = main_negotiator.ufun, 
+            side_ufun = main_negotiator.negotiators[negid].context['ufun'],
             outcomes = get_outcome_space_from_index(main_negotiator, neg_index),
             agreements = [get_agreement_at_index(main_negotiator,i) 
                 for i in range(neg_index)],
@@ -169,23 +173,28 @@ class RivAgent(ANL2025Negotiator):
     @property
     def current_side_neg_strategy(self):
         return self.side_neg_strategies[self.current_neg_index]
-
-    def propose(
-            self, negotiator_id: str, state: SAOState, dest: str | None = None
-    ) -> Outcome | None:
+    
+    def update(self, negotiator_id):
         if did_negotiation_end(self):
             self.side_neg_strategies.append(
                 SideNegotiatorStrategy(self, negotiator_id, get_current_negotiation_index(self))
             )
+
+    def propose(
+            self, negotiator_id: str, state: SAOState, dest: str | None = None
+    ) -> Outcome | None:
+        self.update(negotiator_id)
         return self.current_side_neg_strategy.proposal(state)
 
     def respond(
             self, negotiator_id: str, state: SAOState, source: str | None = None
     ) -> ResponseType:
+        self.update(negotiator_id)
         return self.current_side_neg_strategy.respond(state)
 
 if __name__ == "__main__":
-    from .helpers.runner import run_negotiation, run_for_debug, visualize
+    from .helpers.runner import run_negotiation, run_tournament, run_for_debug, visualize
     # run_for_debug(RivAgent, small=True)
     results = run_negotiation(RivAgent)
+    # results = run_tournament(RivAgent)
     # visualize(results)
