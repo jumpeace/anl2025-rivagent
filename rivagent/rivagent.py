@@ -82,7 +82,14 @@ class RivUtilSpace:
             agreements = sni.agreements, 
             neg_index = sni.neg_index
         )
+
         bids = self.bid_tree.get_bids()
+        if len(bids) > self.sni.coeff['n_sample_bids']:
+            indices = np.random.choice(len(bids), size=self.sni.coeff['n_sample_bids'], replace=False)
+            bids = [bids[i] for i in indices]
+        
+        def calc_n_have_to_accept(bid):
+            return sum([1 for o in bid[self.sni.neg_index+1:] if o is not None], 0)
         
         self.bid2u = {}
         for bid in bids:
@@ -94,13 +101,27 @@ class RivUtilSpace:
                 else:
                     ru = self.sni.ufun(bid)
 
-                    n_have_to_accept = sum([1 for o in bid[self.sni.neg_index+1:] if o is not None], 0)
-                    ease = 1.0 - (n_have_to_accept / self.sni.rest_neg_num)
+                    ease = 1.0 - (calc_n_have_to_accept(bid) / self.sni.rest_neg_num)
 
                     u = self.sni.coeff['util_weight'] * ru + self.sni.coeff['ease_weight'] * ease
             self.bid2u[str(bid)] = u
 
-        self.descend_bids = sorted(bids, key=lambda bid: self.bid2u[str(bid)], reverse=True)
+        descend_bids_tmp = sorted(bids, key=lambda bid: self.bid2u[str(bid)], reverse=True)
+
+        self.descend_bids = []
+        curr_u, curr_bids = self.get(descend_bids_tmp[0]), [descend_bids_tmp[0]]
+        sort_fn = lambda _bids: sorted(_bids, key=lambda bid: calc_n_have_to_accept(bid), reverse=True)
+        for bid in descend_bids_tmp[1:]:
+            u = self.get(bid)
+            if bid == descend_bids_tmp[-1]:
+                self.descend_bids += sort_fn(curr_bids)
+                break
+
+            if u == curr_u:
+                curr_bids.append(bid)
+            else:
+                self.descend_bids += sort_fn(curr_bids)
+                curr_u, curr_bids = u, []
 
         self.max_u = self.get(self.descend_bids[0])
         self.outcome_2_max_u = {}
@@ -109,7 +130,7 @@ class RivUtilSpace:
             if key not in self.outcome_2_max_u.keys():
                 self.outcome_2_max_u[key] = self.get(bid)
 
-        self.max_end_neg_u = self.outcome_2_max_u[str(None)]
+        self.max_end_neg_u = self.get_max_u_by_outcome(None)
         self.have_to_end_neg = self.max_end_neg_u == self.max_u
         
         # print({str(bid):f'{self.get(bid):.3f}' for bid in self.descend_bids})
@@ -122,6 +143,11 @@ class RivUtilSpace:
 
     def get(self, bid):
         return self.bid2u[str(bid)]
+    
+    def get_max_u_by_outcome(self, outcome):
+        if str(outcome) not in self.outcome_2_max_u.keys():
+            return 0.0
+        return self.outcome_2_max_u[str(outcome)]
 
 class CurveArea:
     def __init__(self, max_):
@@ -181,13 +207,15 @@ class Threshold:
         self.sni = sni
 
         self.lower_curve = ThresholdMinCurve(sni, u_space)
-        # exit()
 
         if not u_space.have_to_end_neg:
             self.r_delta = 1.0 / self.lower_curve.size
     
+    def calc_r_lower(self, state):
+        return 1 - state.relative_time ** (self.sni.coeff['th_aggressive'])
+    
     def calc_range(self, state):
-        r_lower = 1 - state.relative_time ** (self.sni.coeff['th_aggressive'])
+        r_lower = self.calc_r_lower(state)
         lower = self.lower_curve.calc_by_relative(r_lower)
 
         r_upper = r_lower + self.r_delta
@@ -241,7 +269,7 @@ class SideNegotiatorStrategy:
             return ResponseType.END_NEGOTIATION
         
         th_range = self.threshold.calc_range(state)
-        opponent_u = self.u_space.outcome_2_max_u[str(state.current_offer)]
+        opponent_u = self.u_space.get_max_u_by_outcome(state.current_offer)
         if opponent_u >= th_range['lower']:
             return ResponseType.ACCEPT_OFFER
         
@@ -260,6 +288,7 @@ class RivAgent(ANL2025Negotiator):
             'ease_weight': 0.2,     # ease_weight = 1.0 - util_weight
             'th_aggressive': 1.5,   # th_aggressive > 0
             'th_delta': 0.1,        # 0.0 < proposal_delta <= 1.0
+            'n_sample_bids': 500    # n_sample_bids > 0
         }
 
     @property
@@ -292,6 +321,6 @@ class RivAgent(ANL2025Negotiator):
 if __name__ == "__main__":
     from .helpers.runner import run_negotiation, run_tournament, run_for_debug, visualize
     # run_for_debug(RivAgent, small=True)
-    results = run_negotiation(RivAgent)
-    # results = run_tournament(RivAgent)
+    # results = run_negotiation(RivAgent)
+    results = run_tournament(RivAgent)
     # visualize(results)
