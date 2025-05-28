@@ -168,34 +168,37 @@ class CurveArea:
     def calc_by_r(self, r):
         return self.min + self.size * ((r - self.r_min) / self.r_size)
 
-class ThresholdMinCurve:
+class ThresholdLowerCurve:
     def __init__(self, sni, u_space):
         self.max = u_space.max_u
         self.min = u_space.max_end_neg_u
         
         if not u_space.have_to_end_neg:
+            self.th_delta = self.max * sni.coeff['th_delta_r']
+
             self.areas = [CurveArea(max_=self.max)]
             prev_u = self.max
             for bid in u_space.descend_bids[1:]:
                 u = u_space.get(bid)
                 if u < self.min:
+                    self.areas[-1].min = self.min
                     break
-                if u - prev_u > sni.coeff['th_delta']:
-                    self.areas[-1].min = prev_u
-                    self.areas.append(CurveArea(max_=u))
+                if prev_u - u > self.th_delta - 1e-6:
+                    self.areas[-1].min = prev_u - 1e-6
+                    self.areas.append(CurveArea(max_=u+1e-6))
                 prev_u = u
-            self.areas[-1].min = self.min
-        
+            else:
+                self.areas[-1].min = u_space.get(u_space.descend_bids[-1])
+
+            
             self.size = sum([area.size for area in self.areas], 0)
 
-            self.areas[0].r_min = 0.0
-            self.areas[-1].r_max = 1.0
+            self.areas[0].r_max = 1.0
+            self.areas[-1].r_min = 0.0
             for i in range(len(self.areas)-1):
-                r = self.areas[i].r_min + (self.areas[i].size / self.size)
-                self.areas[i].r_max = r
-                self.areas[i+1].r_min = r
-            
-            # print([{'max':a.max,'min':a.min,'r_max':a.r_max,'r_min':a.r_min} for a in self.areas])
+                r = self.areas[i].r_max - (self.areas[i].size / self.size)
+                self.areas[i].r_min = r
+                self.areas[i+1].r_max = r
 
     def calc_by_relative(self, r):
         for i, area in enumerate(self.areas):
@@ -205,11 +208,11 @@ class ThresholdMinCurve:
 class Threshold:
     def __init__(self, sni, u_space):
         self.sni = sni
-
-        self.lower_curve = ThresholdMinCurve(sni, u_space)
+        self.lower_curve = ThresholdLowerCurve(sni, u_space)
 
         if not u_space.have_to_end_neg:
-            self.r_delta = 1.0 / self.lower_curve.size
+            self.r_delta = self.lower_curve.th_delta / self.lower_curve.size \
+                if self.lower_curve.size > 0.0 else 0.0
     
     def calc_r_lower(self, state):
         return 1 - state.relative_time ** (self.sni.coeff['th_aggressive'])
@@ -250,7 +253,7 @@ class SideNegotiatorStrategy:
         th_range = self.threshold.calc_range(state)
 
         target_outcomes = []
-        for bid in self.u_space.descend_bids:
+        for bid in reversed(self.u_space.descend_bids):
             u = self.u_space.get(bid)
             curr_outcome = self.u_space.get_curr_outcome(bid)
             if u < th_range['lower']:
@@ -287,7 +290,7 @@ class RivAgent(ANL2025Negotiator):
             'util_weight': 0.8,     # 0.0 <= util_weight <= 1.0
             'ease_weight': 0.2,     # ease_weight = 1.0 - util_weight
             'th_aggressive': 1.5,   # th_aggressive > 0
-            'th_delta': 0.1,        # 0.0 < proposal_delta <= 1.0
+            'th_delta_r': 0.1,      # 0.0 < proposal_delta <= 1.0
             'n_sample_bids': 500    # n_sample_bids > 0
         }
 
@@ -321,6 +324,6 @@ class RivAgent(ANL2025Negotiator):
 if __name__ == "__main__":
     from .helpers.runner import run_negotiation, run_tournament, run_for_debug, visualize
     # run_for_debug(RivAgent, small=True)
-    # results = run_negotiation(RivAgent)
-    results = run_tournament(RivAgent)
+    results = run_negotiation(RivAgent)
+    # results = run_tournament(RivAgent)
     # visualize(results)
