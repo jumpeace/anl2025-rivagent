@@ -300,9 +300,10 @@ class ScenarioModel:
     def __init__(self, main_negotiator):
         self.neg_num = get_number_of_subnegotiations(main_negotiator)
         self.ufun = main_negotiator.ufun
-        self.side_ufuns = [main_negotiator.negotiators[get_negid_from_index(main_negotiator, i)].context['ufun']
-            for i in range(self.neg_num)]
-        self.first_ufun = self.side_ufuns[0]
+
+        first_negid = get_negid_from_index(main_negotiator, 0) if self.neg_num > 1 else list(main_negotiator.id_dict.values())[0]
+        self.first_ufun = main_negotiator.negotiators[first_negid].context['ufun']
+
         self.all_bids = all_possible_bids_with_agreements_fixed(main_negotiator)
         self.n_bids = len(self.all_bids)
 
@@ -310,13 +311,16 @@ class ScenarioModel:
 
     def init_is_multi_agreement(self, main_negotiator):
         self.is_multi_agreement = False
+        if self.neg_num == 1:
+            return
+        
         sample_size, sample_count = 10, 0
         all_accept_bids = [bid for bid in self.all_bids
             if sum([int(o is not None) for o in bid],0) == self.neg_num]
         for bid in all_accept_bids:
             if sum([int(o is not None) for o in bid],0) < self.neg_num:
                 continue
-            side_us = [self.side_ufuns[i](o) for i, o in enumerate(bid)]
+            side_us = [self.first_ufun(o) for i, o in enumerate(bid)]
             center_u = self.ufun(bid)
             self.is_multi_agreement = np.max(side_us) == center_u
             if not self.is_multi_agreement:
@@ -373,6 +377,6 @@ class RivAgent(ANL2025Negotiator):
 if __name__ == "__main__":
     from .helpers.runner import run_negotiation, run_tournament, run_for_debug, visualize
     # run_for_debug(RivAgent, small=True)
-    results = run_negotiation(RivAgent)
-    # results = run_tournament(RivAgent)
+    # results = run_negotiation(RivAgent)
+    results = run_tournament(RivAgent)
     # visualize(results)
