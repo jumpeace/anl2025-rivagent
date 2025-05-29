@@ -83,10 +83,15 @@ class RivUtilSpace:
             neg_index = sni.neg_index
         )
 
-        bids = self.bid_tree.get_bids()
-        if len(bids) > self.sni.coeff['n_sample_bids']:
-            indices = np.random.choice(len(bids), size=self.sni.coeff['n_sample_bids'], replace=False)
-            bids = [bids[i] for i in indices]
+        if self.sni.n_bids <= self.sni.coeff['n_sample_bids']:
+            bids = self.bid_tree.get_bids()
+        else:
+            bids = []
+            sample_size = self.sni.coeff['n_sample_bids'] // self.sni.n_outcomes
+            for child_node in self.bid_tree.children:
+                child_bids = child_node.get_bids()
+                indices = np.random.choice(len(child_bids), size=sample_size, replace=False)
+                bids += [child_bids[i] for i in indices]
         
         def calc_n_have_to_accept(bid):
             return sum([1 for o in bid[self.sni.neg_index+1:] if o is not None], 0)
@@ -114,7 +119,7 @@ class RivUtilSpace:
         for bid in descend_bids_tmp[1:]:
             u = self.get(bid)
             if bid == descend_bids_tmp[-1]:
-                self.descend_bids += sort_fn(curr_bids)
+                self.descend_bids += sort_fn(curr_bids + [bid])
                 break
 
             if u == curr_u:
@@ -129,6 +134,8 @@ class RivUtilSpace:
             key = str(self.get_curr_outcome(bid))
             if key not in self.outcome_2_max_u.keys():
                 self.outcome_2_max_u[key] = self.get(bid)
+        
+        print(self.outcome_2_max_u)
 
         self.max_end_neg_u = self.get_max_u_by_outcome(None)
         self.have_to_end_neg = self.max_end_neg_u == self.max_u
@@ -145,8 +152,6 @@ class RivUtilSpace:
         return self.bid2u[str(bid)]
     
     def get_max_u_by_outcome(self, outcome):
-        if str(outcome) not in self.outcome_2_max_u.keys():
-            return 0.0
         return self.outcome_2_max_u[str(outcome)]
 
 class CurveArea:
@@ -232,12 +237,19 @@ class SideNegotiatorInfo:
     def __init__(self, main_negotiator, negid, neg_index, coeff):
         self.ufun = main_negotiator.ufun
         self.side_ufun = main_negotiator.negotiators[negid].context['ufun']
+
         self.outcomes = get_outcome_space_from_index(main_negotiator, neg_index)
+        self.n_outcomes = len(self.outcomes)
+
         self.agreements = [get_agreement_at_index(main_negotiator,i) 
             for i in range(neg_index)]
+
         self.neg_index = neg_index
         self.neg_num = get_number_of_subnegotiations(main_negotiator)
         self.rest_neg_num = self.neg_num - self.neg_index
+
+        self.n_bids = self.n_outcomes ** (self.rest_neg_num)
+
         self.coeff = coeff
 
 class SideNegotiatorStrategy:
@@ -291,7 +303,7 @@ class RivAgent(ANL2025Negotiator):
             'ease_weight': 0.2,     # ease_weight = 1.0 - util_weight
             'th_aggressive': 1.5,   # th_aggressive > 0
             'th_delta_r': 0.1,      # 0.0 < proposal_delta <= 1.0
-            'n_sample_bids': 500    # n_sample_bids > 0
+            'n_sample_bids': 3000  # n_sample_bids > 0
         }
 
     @property
