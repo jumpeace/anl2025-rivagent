@@ -16,7 +16,7 @@ from negmas.outcomes import Outcome
 
 from .helpers.helperfunctions import get_current_negotiation_index, get_outcome_space_from_index \
     , get_agreement_at_index, get_nmi_from_index, did_negotiation_end, set_id_dict \
-    , get_number_of_subnegotiations
+    , get_number_of_subnegotiations, all_possible_bids_with_agreements_fixed, get_negid_from_index
 
 from anl2025.negotiator import ANL2025Negotiator
 from negmas.sao.controllers import SAOController, SAOState
@@ -75,31 +75,41 @@ class OutcomeNode:
         return bids
 
 class RivUtilSpace:
-    def __init__(self, sni):
+    def __init__(self, sni, scenario_model):
         self.sni = sni
+        self.is_multi_agreement = scenario_model.is_multi_agreement
+        self.is_use_bid_as_outcome = self.sni.neg_num == 1 or self.is_multi_agreement
 
         self.bid_tree = OutcomeNode(self.sni, 
             agreements = sni.agreements, 
             neg_index = sni.neg_index
         )
 
-        if self.sni.n_bids <= self.sni.coeff['n_sample_bids']:
-            bids = self.bid_tree.get_bids()
+        if self.is_use_bid_as_outcome:
+            bids = self.sni.outcomes
         else:
-            bids = []
-            sample_size = self.sni.coeff['n_sample_bids'] // self.sni.n_outcomes
-            for child_node in self.bid_tree.children:
-                child_bids = child_node.get_bids()
-                indices = np.random.choice(len(child_bids), size=sample_size, replace=False)
-                bids += [child_bids[i] for i in indices]
-        
+            if self.sni.n_bids <= self.sni.coeff['n_sample_bids']:
+                bids = self.bid_tree.get_bids()
+            else:
+                bids = []
+                sample_size = self.sni.coeff['n_sample_bids'] // self.sni.n_outcomes
+                for child_node in self.bid_tree.children:
+                    child_bids = child_node.get_bids()
+                    indices = np.random.choice(len(child_bids), size=sample_size, replace=False)
+                    bids += [child_bids[i] for i in indices]
+
         def calc_n_have_to_accept(bid):
-            return sum([1 for o in bid[self.sni.neg_index+1:] if o is not None], 0)
+            if self.is_use_bid_as_outcome:
+                return int(bid is not None)
+            return sum([int(o is not None) for o in bid[self.sni.neg_index+1:]], 0)
         
         self.bid2u = {}
         for bid in bids:
-            if self.sni.neg_num == 1:
-                u = self.sni.side_ufun(bid)
+            if self.is_use_bid_as_outcome:
+                if self.is_multi_agreement:
+                    u = scenario_model.first_ufun(bid)
+                else:
+                    u = self.sni.side_ufun(bid)
             else:
                 if self.sni.rest_neg_num == 1:
                     u = self.sni.ufun(bid)
@@ -118,15 +128,13 @@ class RivUtilSpace:
         sort_fn = lambda _bids: sorted(_bids, key=lambda bid: calc_n_have_to_accept(bid), reverse=True)
         for bid in descend_bids_tmp[1:]:
             u = self.get(bid)
-            if bid == descend_bids_tmp[-1]:
-                self.descend_bids += sort_fn(curr_bids + [bid])
-                break
-
             if u == curr_u:
                 curr_bids.append(bid)
             else:
                 self.descend_bids += sort_fn(curr_bids)
-                curr_u, curr_bids = u, []
+                curr_u, curr_bids = u, [bid]
+        else:
+            self.descend_bids += sort_fn(curr_bids)
 
         self.max_u = self.get(self.descend_bids[0])
         self.outcome_2_max_u = {}
@@ -135,15 +143,13 @@ class RivUtilSpace:
             if key not in self.outcome_2_max_u.keys():
                 self.outcome_2_max_u[key] = self.get(bid)
         
-        print(self.outcome_2_max_u)
-
         self.max_end_neg_u = self.get_max_u_by_outcome(None)
         self.have_to_end_neg = self.max_end_neg_u == self.max_u
         
         # print({str(bid):f'{self.get(bid):.3f}' for bid in self.descend_bids})
     
     def get_curr_outcome(self, bid):
-        if self.sni.neg_num == 1:
+        if self.is_use_bid_as_outcome:
             return bid
         else:
             return bid[self.sni.neg_index]
@@ -255,7 +261,7 @@ class SideNegotiatorInfo:
 class SideNegotiatorStrategy:
     def __init__(self, main_negotiator, negid, neg_index, coeff):
         self.sni = SideNegotiatorInfo(main_negotiator, negid, neg_index, coeff)
-        self.u_space = RivUtilSpace(self.sni)
+        self.u_space = RivUtilSpace(self.sni, main_negotiator.scenario_model)
         self.threshold = Threshold(self.sni, self.u_space)
     
     def proposal(self, state):
@@ -290,6 +296,35 @@ class SideNegotiatorStrategy:
         
         return ResponseType.REJECT_OFFER
 
+class ScenarioModel:
+    def __init__(self, main_negotiator):
+        self.neg_num = get_number_of_subnegotiations(main_negotiator)
+        self.ufun = main_negotiator.ufun
+        self.side_ufuns = [main_negotiator.negotiators[get_negid_from_index(main_negotiator, i)].context['ufun']
+            for i in range(self.neg_num)]
+        self.first_ufun = self.side_ufuns[0]
+        self.all_bids = all_possible_bids_with_agreements_fixed(main_negotiator)
+        self.n_bids = len(self.all_bids)
+
+        self.init_is_multi_agreement(main_negotiator)
+
+    def init_is_multi_agreement(self, main_negotiator):
+        self.is_multi_agreement = False
+        sample_size, sample_count = 10, 0
+        all_accept_bids = [bid for bid in self.all_bids
+            if sum([int(o is not None) for o in bid],0) == self.neg_num]
+        for bid in all_accept_bids:
+            if sum([int(o is not None) for o in bid],0) < self.neg_num:
+                continue
+            side_us = [self.side_ufuns[i](o) for i, o in enumerate(bid)]
+            center_u = self.ufun(bid)
+            self.is_multi_agreement = np.max(side_us) == center_u
+            if not self.is_multi_agreement:
+                break
+            sample_count += 1
+            if sample_count >= sample_size:
+                break
+
 class RivAgent(ANL2025Negotiator):
     def init(self):
         self.id_dict = {}
@@ -306,6 +341,8 @@ class RivAgent(ANL2025Negotiator):
             'n_sample_bids': 3000  # n_sample_bids > 0
         }
 
+        self.scenario_model = ScenarioModel(self)
+
     @property
     def current_side_neg_strategy(self):
         return self.side_neg_strategies[self.current_neg_index]
@@ -314,7 +351,7 @@ class RivAgent(ANL2025Negotiator):
         if did_negotiation_end(self):
             self.side_neg_strategies.append(
                 SideNegotiatorStrategy(
-                    main_negotiator = self, 
+                    main_negotiator = self,
                     negid = negotiator_id, 
                     neg_index = get_current_negotiation_index(self),
                     coeff = self.coeff,
