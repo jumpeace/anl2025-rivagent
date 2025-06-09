@@ -12,19 +12,13 @@ from copy import copy
 
 import numpy as np
 
-from negmas.outcomes import Outcome
-
-from .helpers.helperfunctions import get_current_negotiation_index, get_outcome_space_from_index \
-    , get_agreement_at_index, get_nmi_from_index, did_negotiation_end, set_id_dict \
-    , get_number_of_subnegotiations, all_possible_bids_with_agreements_fixed, get_negid_from_index
+from .helpers.helperfunctions import get_current_negotiation_index, get_agreement_at_index \
+    , get_number_of_subnegotiations, all_possible_bids_with_agreements_fixed, is_edge_agent
 
 from anl2025.negotiator import ANL2025Negotiator
-from negmas.sao.controllers import SAOController, SAOState
-from negmas import (
-    DiscreteCartesianOutcomeSpace,
-    ExtendedOutcome,
-    ResponseType, CategoricalIssue,
-)
+from negmas import ResponseType
+from negmas.outcomes import Outcome
+from negmas.sao.controllers import SAOState
 
 class Range:
     def __init__(self, mx=None, mn=None):
@@ -44,9 +38,81 @@ class Range:
     def __str__(self):
         return f'[{self.mn}~{self.mx}]'
 
+class Config:
+    def __init__(self, agent):
+        self.id_dict = {}
+        for neg_id in agent.negotiators.keys():
+            index = agent.negotiators[neg_id].context['index']
+            self.id_dict[index] = neg_id
+        agent.id_dict = self.id_dict
+
+        self.coeff = {
+            'opponent_accept_prop': 0.5,    # 0.0 <= opponent_accept_prop <= 1.0
+            'th_min_ratio': 0.6,            # 0.0 <=th_min_ratio <= 1.0
+            'th_aggressive': 1.5,           # th_aggressive > 0.0
+            'th_delta_r': 0.1,              # 0.0 < proposal_delta <= 1.0
+        }
+
+        self.neg_num = get_number_of_subnegotiations(agent)
+
+        self.is_edge = is_edge_agent(agent)
+        self.first_side_ufun = self.collect_first_side_ufun(agent)
+        self.is_multi_agree = self.collect_is_multi_agree(agent)
+        self.use_single_neg = self.is_edge or self.is_multi_agree
+
+        self.all_offers = self.collect_all_offers(agent)
+        self.n_offers = len(self.all_offers)
+        self.all_outcomes = self.all_offers + [None]
+        self.n_outcomes = len(self.all_outcomes)
+        self.all_bids = self.collect_all_bids(agent)
+        self.n_bids = len(self.all_bids)
+
+        self.ufun = self.first_side_ufun if self.use_single_neg else agent.ufun
+        self.max_u = max([self.ufun(bid) for bid in self.all_bids])
+
+    def collect_first_side_ufun(self, agent):
+        if self.is_edge:
+            first_neg_id = list(self.id_dict.values())[0]
+        else:
+            first_neg_id = self.id_dict[0]
+        return agent.negotiators[first_neg_id].context['ufun']
+
+    def collect_is_multi_agree(self, agent):
+        if self.is_edge:
+            return False
+        
+        sample_size, sample_count = 10, 0
+        all_bids_tmp = all_possible_bids_with_agreements_fixed(agent)
+        all_accept_bids_tmp = [bid for bid in all_bids_tmp
+            if sum([int(o is not None) for o in bid],0) == self.neg_num]
+        for bid in all_accept_bids_tmp:
+            if sum([int(o is not None) for o in bid],0) < self.neg_num:
+                continue
+            side_us = [self.first_side_ufun(o) for i, o in enumerate(bid)]
+            center_u = agent.ufun(bid)
+            
+            if np.max(side_us) != center_u:
+                return False
+            
+            sample_count += 1
+            if sample_count >= sample_size:
+                return True
+    
+    def collect_all_offers(self, agent):
+        if self.is_edge:
+            return agent.ufun.outcome_space.enumerate_or_sample()
+        else:
+            return agent.ufun.outcome_spaces[0].enumerate_or_sample()
+    
+    def collect_all_bids(self, agent):
+        if self.use_single_neg:
+            return self.all_outcomes
+        else:
+            return all_possible_bids_with_agreements_fixed(agent)
+
 class ScoreTree:
-    def __init__(self, bi, agreements, max_depth, is_root, opponent_accept_prop):
-        self.bi = bi
+    def __init__(self, config, agreements, max_depth, is_root, opponent_accept_prop):
+        self._config = config
 
         self.agreements = agreements
 
@@ -56,8 +122,8 @@ class ScoreTree:
 
         if not self.is_leaf:
             self.noc2child = {}
-            for noc in self.bi.outcomes:
-                child = ScoreTree(bi,  
+            for noc in self._config.all_outcomes:
+                child = ScoreTree(config,  
                     agreements = self.agreements + [noc],
                     max_depth = self.max_depth,
                     is_root = False,
@@ -71,12 +137,11 @@ class ScoreTree:
                 return self.get_child(noc).score > self.get_child(None).score
                 
             target_nocs = []
-            for noc in self.bi.outcomes:
+            for noc in self._config.all_outcomes:
                 if judge_append_as_child_fn(noc):
                     target_nocs.append(noc)
             
             self.descend_nocs = sorted(target_nocs, key=lambda noc: self.get_child(noc).score, reverse=True)
-            # print(self.agreements, self.descend_nocs)
 
             if not self.is_root:
                 self.noc2prop = {}
@@ -96,7 +161,8 @@ class ScoreTree:
     @property
     def score(self):
         if self.is_leaf:
-            return self.bi.calc_u(bid=self.agreements)
+            bid = self.agreements[0] if self._config.use_single_neg else self.agreements
+            return self._config.ufun(bid)
         else:
             ret = 0.0
             for noc in self.descend_nocs:
@@ -119,14 +185,26 @@ class ScoreTree:
         return self.noc2child[str(noc)]
 
 class ScoreSpace:
-    def __init__(self, sni):
-        self.tree = ScoreTree(sni.b, 
-            agreements = sni.agreements if not sni.c.use_outcome else [],
-            max_depth = sni.c.neg_num if not sni.c.use_outcome else 1,
+    def __init__(self, agent):
+        config = agent.config
+
+        self.tree = ScoreTree(config, 
+            agreements = [] if config.use_single_neg else agent.agreements,
+            max_depth = 1 if config.use_single_neg else config.neg_num,
             is_root = True,
-            opponent_accept_prop = sni.c.calc_opponent_accept_prop(),
+            opponent_accept_prop = self.calc_opponent_accept_prop(agent),
         )
         # print({str(oc): self.get(oc) for oc in self.descend_outcomes})
+    
+    def calc_opponent_accept_prop(self, agent):
+        if len(agent.opponent_accept_prop_history) == 0:
+            return 0.6
+        gamma = 0.5
+        weighted_sum, weight_sum = 0.0, 0.0
+        for i, oap in enumerate(agent.opponent_accept_prop_history):
+            weighted_sum += gamma ** i * oap
+            weight_sum += gamma ** i
+        return weighted_sum / weight_sum
 
     @property
     def rng(self):
@@ -144,7 +222,7 @@ class ScoreSpace:
         return self.tree.get_child(oc).score
 
     @property
-    def descend_accept_outcomes(self):
+    def descend_offers(self):
         return [o for o in self.tree.descend_nocs
             if o is not None]
 
@@ -157,31 +235,37 @@ class CurveArea:
         return self.rng.get_v(r=self.r_rng.get_r(v=r))
 
 class ThresholdSpace:
-    def __init__(self, sni, score_space):
+    def __init__(self, agent):
+        config = agent.config
+
+        assert 'score_space' in agent.__dict__.keys()
+        score_space = agent.score_space
+
         self.rng = Range(
             mx = score_space.rng.mx,
-            mn = max(score_space.end_neg_score, score_space.rng.mx * sni.coeff['th_min_ratio'])
+            mn = max(score_space.end_neg_score, score_space.rng.mx * config.coeff['th_min_ratio'])
         )
         # print(self.rng.mx, self.rng.mn)
-        sni.set_have_to_end_neg(self.rng.mx <= self.rng.mn)
-        if sni.have_to_end_neg:
+        agent.set_have_to_end_neg(self.rng.mx <= self.rng.mn)
+        if agent.have_to_end_neg:
             return
         
-        self.delta = score_space.rng.get_v(r=sni.coeff['th_delta_r'])
+        self.delta = score_space.rng.get_v(r=config.coeff['th_delta_r'])
 
 class ThresholdAreaSpace:
-    def __init__(self, sni, score_space):
-        th_space = ThresholdSpace(sni, score_space)
+    def __init__(self, agent):
+        score_space = agent.score_space
+        th_space = ThresholdSpace(agent)
 
-        if sni.have_to_end_neg:
+        if agent.have_to_end_neg:
             return
 
         self.area_min_size = 1e-6
 
         self.areas = [CurveArea(mx=th_space.rng.mx)]
         prev_score = th_space.rng.mx
-        for oc in score_space.descend_accept_outcomes[1:]:
-            score = score_space.get(oc)
+        for offer in score_space.descend_offers[1:]:
+            score = score_space.get(offer)
             if score < th_space.rng.mn:
                 area_mn = th_space.rng.mn
                 if prev_score - area_mn > th_space.delta:
@@ -197,7 +281,7 @@ class ThresholdAreaSpace:
                 self.areas.append(CurveArea(mx=score))
             prev_score = score
         else:
-            self.areas[-1].rng.mn = score_space.get(score_space.descend_accept_outcomes[-1])
+            self.areas[-1].rng.mn = score_space.get(score_space.descend_offers[-1])
         
         self.size = sum([area.rng.size for area in self.areas], 0)
 
@@ -216,15 +300,15 @@ class ThresholdAreaSpace:
                 return area.get_v(r)
     
 class Threshold:
-    def __init__(self, sni, score_space):
-        self.sni = sni
-        self.area_space = ThresholdAreaSpace(sni, score_space)
+    def __init__(self, agent):
+        self._config = agent.config
+        self.area_space = ThresholdAreaSpace(agent)
     
     def calc_sigmoid(self, x):
         return 1 / (1 + np.exp(-x))
 
     def calc_r_mn(self, state):
-        return 1 - state.relative_time ** (self.sni.coeff['th_aggressive'])
+        return 1 - state.relative_time ** (self._config.coeff['th_aggressive'])
     
     def calc(self, state):
         r_mn = self.calc_r_mn(state)
@@ -240,72 +324,59 @@ class Threshold:
         return Range(mx=mx, mn=mn)
 
 class OpponentModel:
-    def __init__(self, sni):
-        self.sni = sni
+    def __init__(self, agent):
+        self._config = agent.config
         self.offer_history = []
     
     def update(self, offer):
         self.offer_history.append(offer)
     
     def calc_accept_prop(self):
-        return len(set(self.offer_history)) / self.sni.b.n_offers
+        return len(set(self.offer_history)) / self._config.n_offers
 
-class BidInfo:
-    def __init__(self, main_negotiator, negid, neg_index):
-        self._cni = main_negotiator.cni
+class RivAgent(ANL2025Negotiator):
+    def init(self):
+        self.config = Config(self)
+        self.neg_index = -1
 
-        self.side_ufun = main_negotiator.negotiators[negid].context['ufun']
-
-        if not self._cni.is_edge:
-            self.outcomes = get_outcome_space_from_index(main_negotiator, neg_index)
-        else:
-            self.outcomes = main_negotiator.ufun.outcome_space.enumerate_or_sample()
-            self.outcomes.append(None)
-        self.n_outcomes = len(self.outcomes)
-        self.n_offers = self.n_outcomes - 1
-
-    def calc_u(self, bid):
-        if self._cni.is_edge:
-            return self.side_ufun(bid[0])
-        elif self._cni.is_multi_agreement:
-            return self._cni.first_ufun(bid[0])
-        else:
-            return self._cni.ufun(bid)
-
-class SideNegotiatorInfo:
-    def __init__(self, main_negotiator, negid, neg_index, coeff):
-        self.b = BidInfo(main_negotiator, negid, neg_index)
-        self.c = main_negotiator.cni
-
-        if not self.c.is_edge:
-            self.agreements = [get_agreement_at_index(main_negotiator,i) 
-                for i in range(neg_index)]
-        else:
-            self.agreements = []
-
-        self.neg_index = neg_index
-        self.rest_neg_num = self.c.neg_num - self.neg_index
-
-        self.coeff = coeff
+        self.opponent_accept_prop_history = []
     
-    def set_have_to_end_neg(self, v):
-        self.have_to_end_neg = v
+    def update(self):
+        if self.neg_index >= len(self.finished_negotiators):
+            return 
+        
+        # finalize negotiation
+        if self.neg_index >= 0:
+            self.opponent_accept_prop_history.append(
+                self.opponent_model.calc_accept_prop())
+        
+        # setup negotiation
+        self.neg_index = get_current_negotiation_index(self)
+        self.rest_neg_num = self.config.neg_num - self.neg_index
 
-class SideNegotiatorStrategy:
-    def __init__(self, main_negotiator, negid, neg_index, coeff):
-        self.sni = SideNegotiatorInfo(main_negotiator, negid, neg_index, coeff)
-        self.score_space = ScoreSpace(self.sni)
-        self.threshold = Threshold(self.sni, self.score_space)
-        self.opponent_model = OpponentModel(self.sni)
-    
-    def proposal(self, state):
-        if self.sni.have_to_end_neg:
+        if not self.config.is_edge:
+            self.agreements = [get_agreement_at_index(self, i) 
+                for i in range(self.neg_index)]
+
+        self.score_space = ScoreSpace(self)
+        self.threshold = Threshold(self)
+        self.opponent_model = OpponentModel(self)
+
+    def set_have_to_end_neg(self, arg):
+        self.have_to_end_neg = arg
+
+    def propose(
+            self, negotiator_id: str, state: SAOState, dest: str | None = None
+    ) -> Outcome | None:
+        self.update()
+
+        if self.have_to_end_neg:
             return None
         
         th_rng = self.threshold.calc_rng(state)
 
         target_outcomes = []
-        for oc in reversed(self.score_space.descend_accept_outcomes):
+        for oc in reversed(self.score_space.descend_offers):
             score = self.score_space.get(oc)
             if score < th_rng.mn:
                 continue
@@ -321,10 +392,12 @@ class SideNegotiatorStrategy:
         selected_index = np.random.choice(len(target_outcomes))
         return target_outcomes[selected_index]
 
-    def respond(self, state):
-        self.opponent_model.update(offer=state.current_offer)
+    def respond(
+            self, negotiator_id: str, state: SAOState, source: str | None = None
+    ) -> ResponseType:
+        self.update()
 
-        if self.sni.have_to_end_neg:
+        if self.have_to_end_neg:
             return ResponseType.END_NEGOTIATION
         
         th = self.threshold.calc(state)
@@ -334,121 +407,10 @@ class SideNegotiatorStrategy:
         
         return ResponseType.REJECT_OFFER
 
-class CenterNegotiationInfo:
-    def __init__(self, main_negotiator):
-        self.neg_num = get_number_of_subnegotiations(main_negotiator)
-        self.ufun = main_negotiator.ufun
-
-        self.all_bids = all_possible_bids_with_agreements_fixed(main_negotiator)
-        self.n_bids = len(self.all_bids)
-
-        self.neg_num = get_number_of_subnegotiations(main_negotiator)
-
-        self.opponent_accept_prop_history = []
-
-        self.init_is_edge()
-        self.init_first_ufun(main_negotiator)
-        self.init_is_multi_agreement()
-        self.use_outcome = self.is_edge or self.is_multi_agreement
-        self.init_max_u()
-    
-    def init_is_edge(self):
-        self.is_edge = self.neg_num == 1
-    
-    def init_first_ufun(self, main_negotiator):
-        if not self.is_edge:
-            first_negid = get_negid_from_index(main_negotiator, 0)
-        else:
-            first_negid = list(main_negotiator.id_dict.values())[0]
-        self.first_ufun = main_negotiator.negotiators[first_negid].context['ufun']
-
-    def init_is_multi_agreement(self):
-        self.is_multi_agreement = False
-        if self.is_edge:
-            return
-        
-        sample_size, sample_count = 10, 0
-        all_accept_bids = [bid for bid in self.all_bids
-            if sum([int(o is not None) for o in bid],0) == self.neg_num]
-        for bid in all_accept_bids:
-            if sum([int(o is not None) for o in bid],0) < self.neg_num:
-                continue
-            side_us = [self.first_ufun(o) for i, o in enumerate(bid)]
-            center_u = self.ufun(bid)
-            self.is_multi_agreement = np.max(side_us) == center_u
-            if not self.is_multi_agreement:
-                break
-            sample_count += 1
-            if sample_count >= sample_size:
-                break
-
-    def init_max_u(self):
-        self.max_u = 0.0
-        for bid in self.all_bids:
-            u = self.ufun(bid) if not self.is_edge else self.first_ufun(bid)
-            self.max_u = max(u, self.max_u)
-    
-    def update(self, opponent_accept_prop):
-        self.opponent_accept_prop_history.append(opponent_accept_prop)
-    
-    def calc_opponent_accept_prop(self):
-        if len(self.opponent_accept_prop_history) == 0:
-            return 0.6
-        gamma = 0.5
-        weighted_sum, weight_sum = 0.0, 0.0
-        for i, oap in enumerate(self.opponent_accept_prop_history):
-            weighted_sum += gamma ** i * oap
-            weight_sum += gamma ** i
-        return weighted_sum / weight_sum
-
-class RivAgent(ANL2025Negotiator):
-    def init(self):
-        self.id_dict = {}
-        set_id_dict(self)
-
-        self.current_neg_index = -1
-        self.side_neg_strategy = None
-
-        self.coeff = {
-            'opponent_accept_prop': 0.5,    # 0.0 <= opponent_accept_prop <= 1.0
-            'th_min_ratio': 0.6,            # 0.0 <=th_min_ratio <= 1.0
-            'th_aggressive': 1.5,           # th_aggressive > 0.0
-            'th_delta_r': 0.1,              # 0.0 < proposal_delta <= 1.0
-        }
-
-        self.cni = CenterNegotiationInfo(self)
-    
-    def update(self, negotiator_id):
-        if did_negotiation_end(self):
-            self.side_neg_strategy = \
-                SideNegotiatorStrategy(
-                    main_negotiator = self,
-                    negid = negotiator_id, 
-                    neg_index = get_current_negotiation_index(self),
-                    coeff = self.coeff,
-                )
-
-    def propose(
-            self, negotiator_id: str, state: SAOState, dest: str | None = None
-    ) -> Outcome | None:
-        self.update(negotiator_id)
-        return self.side_neg_strategy.proposal(state)
-
-    def respond(
-            self, negotiator_id: str, state: SAOState, source: str | None = None
-    ) -> ResponseType:
-        self.update(negotiator_id)
-        response = self.side_neg_strategy.respond(state)
-        if response != ResponseType.REJECT_OFFER:
-            self.cni.update(
-                opponent_accept_prop = self.side_neg_strategy.opponent_model.calc_accept_prop()
-            )
-        return response
-
 if __name__ == "__main__":
     from anl2025.negotiator import Boulware2025, Random2025, Linear2025, Conceder2025
 
-    do_tournament = False
+    do_tournament = True
 
     if not do_tournament:
         from .helpers.runner import run_negotiation
@@ -476,8 +438,8 @@ if __name__ == "__main__":
                 Conceder2025,
             ],
             scenario_names = [
-                # 'dinners',
-                'target-quantity',
+                'dinners',
+                # 'target-quantity',
                 # 'job-hunt'
             ],
         )

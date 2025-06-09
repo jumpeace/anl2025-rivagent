@@ -3,21 +3,6 @@
 from negmas.sao.controllers import SAOState
 import itertools
 
-def set_id_dict(self):
-    """Creates a dictionary that maps the index of the negotiation to the negotiator id. The index of the negotiation is the order in which the negotiation happen in sequence.
-    This dictionary allows us to find the right id for easy access to further information about the specific negotiation."""
-    for id in self.negotiators.keys():
-        index = self.negotiators[id].context['index']
-        self.id_dict[index] = id
-
-
-def did_negotiation_end(self):
-    """The function finished_negotiators checks how many threads are finished. If that number changes, then the next negotiation has started."""
-    if self.current_neg_index != len(self.finished_negotiators):
-        self.current_neg_index = len(self.finished_negotiators)
-        return True
-    return False
-
 def get_current_negotiation_index(self):
     """Returns the index of the current negotiation. An index 0 means the first negotiation in the sequence, index 1 the second, etc."""
     return len(self.finished_negotiators)
@@ -86,39 +71,10 @@ def all_possible_bids_with_agreements_fixed(self):
     adapted_outcomes = cartesian_product(possible_outcomes)
     return adapted_outcomes
 
-def find_best_bid_in_outcomespace(self):
-    """Fixing previous agreements, this functions returns the best bid that can still be achieved."""
-    # get outcome space with all bids with fixed agreements
-    updated_outcomes = all_possible_bids_with_agreements_fixed(self)
-
-    # this function is also in self.ufun.extreme_outcomes()
-    mn, mx = float("inf"), float("-inf")
-    worst, best = None, None
-    for o in updated_outcomes:
-        u = self.ufun(o)
-        if u < mn:
-            worst, mn = o, u
-        if u > mx:
-            best, mx = o, u
-    return best
-
-def get_target_bid_at_current_index(self):
-    """ Returns the bid for the current subnegotiation, with the target_bid as source.
-        """
-    index = get_current_negotiation_index(self)
-    #An edge agents bid is only one bid, not a tuple of bids. Therefore, we can just return the target bid.
-    if is_edge_agent(self):
-        return self.target_bid
-    return self.target_bid[index]
-
 def get_nmi_from_index(self, index):
     """
     This function returns the nmi of the subnegotiation with the given index.
     The nmi is the negotiator mechanism interface per subnegotiation. Here you can find any information about the ongoing or ended negotiation, like the agreement or the previous bids.
     """
-    negotiator_id = get_negid_from_index(self,index)
+    negotiator_id = self.id_dict[index]
     return self.negotiators[negotiator_id].negotiator.nmi
-
-def get_negid_from_index(self, index):
-    """ This function returns the negotiator id of the subnegotiation with the given index. """
-    return self.id_dict[index]
