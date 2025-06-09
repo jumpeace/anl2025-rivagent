@@ -15,105 +15,22 @@ from anl2025 import (
 )
 from anl2025.tournament import anl2025_tournament
 from anl2025.ufun import CenterUFun
-from anl2025.negotiator import Boulware2025, Random2025, Linear2025, Conceder2025
-from anl2025.scenario import make_multideal_scenario
 
 import numpy as np
 import matplotlib.pyplot as plt
 
-def run_for_debug(
-    TestedNegotiator,
-    n_repetitions=5,
-    debug=False,
-    nologs=False,
-    small=False,
-):
-    """
-    **Not needed for submission.** You can use this function to test your agent.
-
-    Args:
-       TestedNegotiator: Negotiator type to be tested
-       n_repetitions: The number of repetitions of each scenario tested
-       n_outcomes: Number of outcomes in the domain (makes sure this is between 900 and 1100)
-       n_scenarios: Number of different scenarios generated
-       debug: Pass True here to run the tournament in serial, increase verbosity, and fails on any exception
-       nologs: If passed, no logs will be stored
-       small: if set to True, the tournament will be very small and run in a few seconds.
-
-    Returns:
-        None
-
-    Remarks:
-
-        - This function will take several minutes to run.
-        - To speed it up, use a smaller `n_repetitions` value
-
-    """
-    import time
-
-    from anl2025 import (
-        anl2025_tournament,
-        DEFAULT_TOURNAMENT_PATH,
-        DEFAULT_ANL2025_COMPETITORS,
-        make_multideal_scenario,
-    )
-
-
-    from anl2025.negotiator import Conceder2025
-    from negmas.helpers import humanize_time, unique_name
-    from rich import print
-
-    start = time.perf_counter()
-    name = (
-        unique_name(f"test{TestedNegotiator().type_name.split('.')[-1]}", sep="")
-        if not nologs
-        else None
-    )
-
-    scenarios = [make_multideal_scenario(nedges=3, nissues=2, nvalues=2) for _ in range(1)]
-    scenariosbig = [make_multideal_scenario(nedges=3, ) for _ in range(2)]
-    if small:
-        anl2025_tournament(
-            competitors=tuple([TestedNegotiator]),
-            scenarios=scenarios,
-            non_comptitor_types=tuple([Conceder2025]),
-            n_repetitions=1,
-            n_jobs=-1 if debug else 0,
-            verbose=False,
-        ).final_scores
-    else:
-        anl2025_tournament(
-            competitors=tuple([TestedNegotiator]),
-            scenarios=scenariosbig,
-            non_comptitor_types=tuple(list(DEFAULT_ANL2025_COMPETITORS)),
-            n_repetitions=n_repetitions,
-            n_jobs=-1 if debug else 0,
-            verbose=True,
-        ).final_scores
-    print(f"Finished in {humanize_time(time.perf_counter() - start)}")
-    if name is not None:
-        print(f"You can see all logs at {DEFAULT_TOURNAMENT_PATH / name}")
-
-def run_negotiation(centeragent):
-    # agents:
-    edgeagents = [
-        Random2025,
-        Boulware2025,
-        Linear2025,
-        Conceder2025,
-    ]
-
-    scenarios = [
-        MultidealScenario.from_folder(pathlib.Path("./official_test_scenarios/dinners")),
-        MultidealScenario.from_folder(pathlib.Path("./official_test_scenarios/TargetQuantity_example")),
-        MultidealScenario.from_folder(pathlib.Path("./official_test_scenarios/job_hunt_target")),
-    ]
+def run_negotiation(center_agent, edge_agents, scenario_name, n_steps = 10):
+    scenario_dict = {
+        'dinners': MultidealScenario.from_folder(pathlib.Path("./official_test_scenarios/dinners")),
+        'target-quantity': MultidealScenario.from_folder(pathlib.Path("./official_test_scenarios/TargetQuantity_example")),
+        'job-hunt': MultidealScenario.from_folder(pathlib.Path("./official_test_scenarios/job_hunt_target")),
+    }
 
     results = run_session(
-        scenario=scenarios[0],
-        center_type=centeragent,
-        edge_types=edgeagents,  # type: ignore
-        nsteps=10,
+        scenario=scenario_dict[scenario_name],
+        center_type=center_agent,
+        edge_types=edge_agents,  # type: ignore
+        nsteps=n_steps,
         #  verbose=verbose,
         #  keep_order=keep_order,
         #  share_ufuns=share_ufuns,
@@ -127,7 +44,6 @@ def run_negotiation(centeragent):
     # print some results
     print(f"Center utility: {results.center_utility}")
     print(f"Edge Utilities: {results.edge_utilities}")
-    print(f"Score: {(results.center_utility + np.mean(results.edge_utilities)) / 2}")
     print(f"Agreement: {results.agreements}")
 
     # extra: for nicer lay-outing and more results:
@@ -150,18 +66,14 @@ def run_negotiation(centeragent):
 
     return results
 
-def run_tournament(myagent):
-    scenarios = [
-        MultidealScenario.from_folder(pathlib.Path("./official_test_scenarios/dinners")),
-        MultidealScenario.from_folder(pathlib.Path("./official_test_scenarios/TargetQuantity_example")),
-        MultidealScenario.from_folder(pathlib.Path("./official_test_scenarios/job_hunt_target")),
-    ]
-    competitors = (
-        myagent,
-        Boulware2025,
-        Linear2025,
-        Conceder2025,
-    )
+def run_tournament(my_agent, opponent_agents, scenario_names):
+    scenario_dict = {
+        'dinners': MultidealScenario.from_folder(pathlib.Path("./official_test_scenarios/dinners")),
+        'target-quantity': MultidealScenario.from_folder(pathlib.Path("./official_test_scenarios/TargetQuantity_example")),
+        'job-hunt': MultidealScenario.from_folder(pathlib.Path("./official_test_scenarios/job_hunt_target")),
+    }
+    scenarios = [scenario_dict[name] for name in scenario_names]
+    competitors = [my_agent] + opponent_agents
 
     results = anl2025_tournament(
         scenarios=scenarios,
@@ -183,11 +95,3 @@ def plot_result(m):
     m.plot(save_fig=False)
     plt.show()
     plt.close()
-
-def run_generated_negotiation():
-    scenario = make_multideal_scenario(nedges=8)
-    scenario = make_job_hunt_scenario()
-    scenario = make_target_quantity_scenario()
-    results = run_session(scenario)
-    print(f"Center utility: {results.center_utility}")
-    print(f"Edge Utilities: {results.edge_utilities}")
