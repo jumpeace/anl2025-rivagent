@@ -124,7 +124,7 @@ class ScoreSpace:
             agreements = sni.agreements if not sni.c.use_outcome else [],
             max_depth = sni.c.neg_num if not sni.c.use_outcome else 1,
             is_root = True,
-            opponent_accept_prop = sni.coeff['opponent_accept_prop'],
+            opponent_accept_prop = sni.c.calc_opponent_accept_prop(),
         )
         # print({str(oc): self.get(oc) for oc in self.descend_outcomes})
 
@@ -239,6 +239,17 @@ class Threshold:
 
         return Range(mx=mx, mn=mn)
 
+class OpponentModel:
+    def __init__(self, sni):
+        self.sni = sni
+        self.offer_history = []
+    
+    def update(self, offer):
+        self.offer_history.append(offer)
+    
+    def calc_accept_prop(self):
+        return len(set(self.offer_history)) / self.sni.b.n_offers
+
 class BidInfo:
     def __init__(self, main_negotiator, negid, neg_index):
         self._cni = main_negotiator.cni
@@ -250,6 +261,8 @@ class BidInfo:
         else:
             self.outcomes = main_negotiator.ufun.outcome_space.enumerate_or_sample()
             self.outcomes.append(None)
+        self.n_outcomes = len(self.outcomes)
+        self.n_offers = self.n_outcomes - 1
 
     def calc_u(self, bid):
         if self._cni.is_edge:
@@ -283,6 +296,7 @@ class SideNegotiatorStrategy:
         self.sni = SideNegotiatorInfo(main_negotiator, negid, neg_index, coeff)
         self.score_space = ScoreSpace(self.sni)
         self.threshold = Threshold(self.sni, self.score_space)
+        self.opponent_model = OpponentModel(self.sni)
     
     def proposal(self, state):
         if self.sni.have_to_end_neg:
@@ -308,6 +322,8 @@ class SideNegotiatorStrategy:
         return target_outcomes[selected_index]
 
     def respond(self, state):
+        self.opponent_model.update(offer=state.current_offer)
+
         if self.sni.have_to_end_neg:
             return ResponseType.END_NEGOTIATION
         
@@ -327,6 +343,8 @@ class CenterNegotiationInfo:
         self.n_bids = len(self.all_bids)
 
         self.neg_num = get_number_of_subnegotiations(main_negotiator)
+
+        self.opponent_accept_prop_history = []
 
         self.init_is_edge()
         self.init_first_ufun(main_negotiator)
@@ -369,6 +387,19 @@ class CenterNegotiationInfo:
         for bid in self.all_bids:
             u = self.ufun(bid) if not self.is_edge else self.first_ufun(bid)
             self.max_u = max(u, self.max_u)
+    
+    def update(self, opponent_accept_prop):
+        self.opponent_accept_prop_history.append(opponent_accept_prop)
+    
+    def calc_opponent_accept_prop(self):
+        if len(self.opponent_accept_prop_history) == 0:
+            return 0.6
+        gamma = 0.5
+        weighted_sum, weight_sum = 0.0, 0.0
+        for i, oap in enumerate(self.opponent_accept_prop_history):
+            weighted_sum += gamma ** i * oap
+            weight_sum += gamma ** i
+        return weighted_sum / weight_sum
 
 class RivAgent(ANL2025Negotiator):
     def init(self):
@@ -380,7 +411,7 @@ class RivAgent(ANL2025Negotiator):
 
         self.coeff = {
             'opponent_accept_prop': 0.5,    # 0.0 <= opponent_accept_prop <= 1.0
-            'th_min_ratio': 0.6,            # 0.0 <= concession_weight <= 1.0
+            'th_min_ratio': 0.6,            # 0.0 <=th_min_ratio <= 1.0
             'th_aggressive': 1.5,           # th_aggressive > 0.0
             'th_delta_r': 0.1,              # 0.0 < proposal_delta <= 1.0
         }
@@ -407,7 +438,12 @@ class RivAgent(ANL2025Negotiator):
             self, negotiator_id: str, state: SAOState, source: str | None = None
     ) -> ResponseType:
         self.update(negotiator_id)
-        return self.side_neg_strategy.respond(state)
+        response = self.side_neg_strategy.respond(state)
+        if response != ResponseType.REJECT_OFFER:
+            self.cni.update(
+                opponent_accept_prop = self.side_neg_strategy.opponent_model.calc_accept_prop()
+            )
+        return response
 
 if __name__ == "__main__":
     from anl2025.negotiator import Boulware2025, Random2025, Linear2025, Conceder2025
@@ -424,9 +460,9 @@ if __name__ == "__main__":
                 Linear2025,
                 Conceder2025,
             ],
-            # scenario_name = 'dinners',
+            scenario_name = 'dinners',
             # scenario_name = 'target-quantity',
-            scenario_name = 'job-hunt',
+            # scenario_name = 'job-hunt',
         )
     
     else:
