@@ -44,139 +44,112 @@ class Range:
     def __str__(self):
         return f'[{self.mn}~{self.mx}]'
 
-class OutcomeNode:
-    def __init__(self, sni, agreements, neg_index, parent=None):
-        self.sni = sni
-
-        self.neg_index = neg_index
-        self.parent = parent
+class ScoreTree:
+    def __init__(self, sni, agreements, max_depth, is_root=True):
+        self.bi = sni.b
 
         self.agreements = agreements
-        if self.parent is not None:
-            self.outcome = agreements[-1]
-            self.outcome_index = self.sni.outcomes.index(self.outcome)
-        
-        self.children = []
+
+        self.depth = len(agreements)
+        self.max_depth = max_depth
+
         if not self.is_leaf:
-            for child_outcome in self.sni.outcomes:
-                node = OutcomeNode(self.sni, 
-                    agreements = self.agreements + [child_outcome],
-                    neg_index = self.neg_index + 1, 
-                    parent = self,
+            self.noc2child = {}
+            for noc in self.bi.outcomes:
+                child = ScoreTree(sni, 
+                    agreements = self.agreements + [noc],
+                    max_depth = self.max_depth,
+                    is_root = False,
                 )
-                self.children.append(node)
-        
-    @property
-    def is_root(self):
-        return self.parent is None
-    
-    @property
-    def rest_neg_num(self):
-        return self.sni.c.neg_num - self.neg_index
+                self.noc2child[str(noc)] = child
+
+            def judge_append_as_child_fn(noc):
+                if noc is None:
+                    return True
+                return self.get_child(noc).score > self.get_child(None).score
+                
+            target_nocs = []
+            for noc in self.bi.outcomes:
+                if judge_append_as_child_fn(noc):
+                    target_nocs.append(noc)
+            
+            self.descend_nocs = sorted(target_nocs, key=lambda noc: self.get_child(noc).score, reverse=True)
+            # print(self.agreements, self.descend_nocs)
+
+            self.noc2prop = {}
+            rest_prop_total = 1.0
+            for i, noc in enumerate(self.descend_nocs):
+                if i + 1 < len(self.descend_nocs):
+                    prop = rest_prop_total * sni.coeff['opponent_accept_prop']
+                    self.noc2prop[str(noc)] = prop
+                    rest_prop_total -= prop
+                else:
+                    self.noc2prop[str(noc)] = rest_prop_total
     
     @property
     def is_leaf(self):
-        return self.rest_neg_num == 0
+        return self.depth == self.max_depth
     
-    def get_bids(self):
+    @property
+    def score(self):
         if self.is_leaf:
-            if self.sni.c.neg_num > 1:
-                bid = self.agreements
-            else:
-                bid = self.outcome
-            return [bid]
-
-        bids = []
-        for child in self.children:
-            bids += child.get_bids()
-        
-        return bids
-
-class RivUtilSpace:
-    def __init__(self, sni):
-        self.sni = sni
-        self.is_multi_agreement = self.sni.c.is_multi_agreement
-        self.is_use_bid_as_outcome = self.sni.c.neg_num == 1 or self.is_multi_agreement
-
-        self.rng = Range(mx=self.sni.c.max_u, mn=0.0)
-
-        if self.sni.c.use_outcome:
-            if self.sni.c.is_multi_agreement:
-                self.end_neg_side_u = self.sni.c.first_ufun(None)
-            else:
-                self.end_neg_side_u = self.sni.side_ufun(None)
+            return self.bi.calc_u(bid=self.agreements)
         else:
-            bid = self.sni.agreements + [None] * self.sni.rest_neg_num
-            self.end_neg_side_u = self.sni.c.ufun(bid)
+            ret = 0.0
+            for noc in self.descend_nocs:
+                ret += self.noc2prop[str(noc)] * self.get_child(noc).score
+            return ret
+    
+    @property
+    def max_child_score(self):
+        assert not self.is_leaf
+        noc = self.descend_nocs[0]
+        return self.get_child(noc).score
+
+    @property
+    def end_neg_child_score(self):
+        assert not self.is_leaf
+        noc = self.descend_nocs[-1]
+        return self.get_child(noc).score
+    
+    def get_child(self, noc):
+        return self.noc2child[str(noc)]
+
+class ScoreSpace:
+    def __init__(self, sni):
+        # if self.sni.c.is_edge:
+        #     bid = [None]
+        # else:
+        #     bid = self.sni.agreements + [None] * self.sni.rest_neg_num
+        # self.end_neg_side_u = self.sni.b.calc_u(bid)
         # print(self.end_neg_side_u)
 
-        if self.sni.c.use_outcome:
-            bids = self.sni.outcomes
-        else:
-            bid_tree = OutcomeNode(self.sni, 
-                agreements = sni.agreements, 
-                neg_index = sni.neg_index
-            )
-            if self.sni.c.n_bids <= self.sni.coeff['n_sample_bids']:
-                bids = bid_tree.get_bids()
-            else:
-                bids = []
-                sample_size = self.sni.coeff['n_sample_bids'] // self.sni.n_outcomes
-                for child_node in bid_tree.children:
-                    child_bids = child_node.get_bids()
-                    indices = np.random.choice(len(child_bids), size=sample_size, replace=False)
-                    bids += [child_bids[i] for i in indices]
+        self.tree = ScoreTree(sni, 
+            agreements = sni.agreements if not sni.c.use_outcome else [],
+            max_depth = sni.c.neg_num if not sni.c.use_outcome else 1
+        )
 
-        def calc_n_have_to_accept(bid, start):
-            if self.sni.c.use_outcome:
-                return int(bid is not None)
-            return sum([int(o is not None) for o in bid[start:]], 0)
-        
-        self.bid2u = {}
-        for bid in bids:
-            if self.sni.c.use_outcome:
-                if self.sni.c.is_multi_agreement:
-                    u = self.sni.c.first_ufun(bid)
-                else:
-                    u = self.sni.side_ufun(bid)
-            else:
-                if self.sni.rest_neg_num == 1:
-                    u = self.sni.c.ufun(bid)
-                else:
-                    ru = self.sni.c.ufun(bid)
-                    # if not self.sni.c.is_sum_agreement:
-                    ease = 1.0 - (calc_n_have_to_accept(bid, start=self.sni.neg_index+1) / (self.sni.rest_neg_num-1))
-                    u = (1.0 - self.sni.coeff['ease_weight']) * ru + self.sni.coeff['ease_weight'] * ease
-                    # else:
-                    #     concession = calc_n_have_to_accept(bid, start=self.sni.neg_index) / self.sni.rest_neg_num
-                    #     u = (1.0 - self.sni.coeff['concession_weight']) * ru + self.sni.coeff['concession_weight'] * concession
+        # print({str(oc): self.get(oc) for oc in self.descend_outcomes})
 
-            self.bid2u[str(bid)] = u
-
-        self.descend_bids = sorted(bids, key=lambda bid: self.bid2u[str(bid)], reverse=True)
-        self.descend_accept_bids = [bid for bid in self.descend_bids
-            if self.get_curr_outcome(bid) is not None]
-        
-        # print(self.sni.neg_index, {str(bid): self.get(bid) for bid in self.descend_bids})
-
-        self.mx_bid_u = self.get(self.descend_accept_bids[0])
-        self.outcome_2_max_u = {}
-        for bid in self.descend_accept_bids:
-            key = str(self.get_curr_outcome(bid))
-            if key not in self.outcome_2_max_u.keys():
-                self.outcome_2_max_u[key] = self.get(bid)
+    @property
+    def rng(self):
+        return Range(mx=self.tree.max_child_score, mn=0.0)
     
-    def get_curr_outcome(self, bid):
-        if self.sni.c.use_outcome:
-            return bid
-        else:
-            return bid[self.sni.neg_index]
-
-    def get(self, bid):
-        return self.bid2u[str(bid)]
+    @property
+    def end_neg_score(self):
+        return self.tree.end_neg_child_score
     
-    def get_max_by_outcome(self, outcome):
-        return self.outcome_2_max_u[str(outcome)]
+    @property
+    def descend_outcomes(self):
+        return self.tree.descend_nocs
+
+    def get(self, oc):
+        return self.tree.get_child(oc).score
+
+    @property
+    def descend_accept_outcomes(self):
+        return [o for o in self.tree.descend_nocs
+            if o is not None]
 
 class CurveArea:
     def __init__(self, mx):
@@ -187,44 +160,47 @@ class CurveArea:
         return self.rng.get_v(r=self.r_rng.get_r(v=r))
 
 class ThresholdSpace:
-    def __init__(self, sni, u_space):
-        r = (sni.c.neg_num - sni.neg_index) / sni.c.neg_num
+    def __init__(self, sni, score_space):
         self.rng = Range(
-            mx = min(u_space.mx_bid_u, u_space.rng.mx),
-            mn = max(u_space.end_neg_side_u, u_space.rng.mx * (0.6 + 0.2 * r))
+            mx = score_space.rng.mx,
+            mn = max(score_space.end_neg_score, score_space.rng.mx * sni.coeff['th_min_ratio'])
         )
-        print(self.rng.mx, self.rng.mn)
+        # print(self.rng.mx, self.rng.mn)
         sni.set_have_to_end_neg(self.rng.mx <= self.rng.mn)
+        if sni.have_to_end_neg:
+            return
         
-        self.delta = u_space.rng.get_v(r=sni.coeff['th_delta_r'])
+        self.delta = score_space.rng.get_v(r=sni.coeff['th_delta_r'])
 
 class ThresholdAreaSpace:
-    def __init__(self, sni, u_space, th_space):
+    def __init__(self, sni, score_space):
+        th_space = ThresholdSpace(sni, score_space)
+
         if sni.have_to_end_neg:
             return
 
         self.area_min_size = 1e-6
 
         self.areas = [CurveArea(mx=th_space.rng.mx)]
-        prev_u = th_space.rng.mx
-        for bid in u_space.descend_accept_bids[1:]:
-            u = u_space.get(bid)
-            if u < th_space.rng.mn:
+        prev_score = th_space.rng.mx
+        for oc in score_space.descend_accept_outcomes[1:]:
+            score = score_space.get(oc)
+            if score < th_space.rng.mn:
                 area_mn = th_space.rng.mn
-                if prev_u - area_mn > th_space.delta:
-                    area_mn = prev_u - th_space.delta
+                if prev_score - area_mn > th_space.delta:
+                    area_mn = prev_score - th_space.delta
                 self.areas[-1].rng.mn = area_mn
                 break
 
-            if prev_u - u > th_space.delta:
-                if self.areas[-1].rng.mx == prev_u:
+            if prev_score - score > th_space.delta:
+                if self.areas[-1].rng.mx == prev_score:
                     self.areas[-1].rng.mn = self.areas[-1].rng.mx - self.area_min_size
                 else:
-                    self.areas[-1].rng.mn = prev_u
-                self.areas.append(CurveArea(mx=u))
-            prev_u = u
+                    self.areas[-1].rng.mn = prev_score
+                self.areas.append(CurveArea(mx=score))
+            prev_score = score
         else:
-            self.areas[-1].rng.mn = u_space.get(u_space.descend_accept_bids[-1])
+            self.areas[-1].rng.mn = score_space.get(score_space.descend_accept_outcomes[-1])
         
         self.size = sum([area.rng.size for area in self.areas], 0)
 
@@ -243,10 +219,9 @@ class ThresholdAreaSpace:
                 return area.get_v(r)
     
 class Threshold:
-    def __init__(self, sni, u_space):
+    def __init__(self, sni, score_space):
         self.sni = sni
-        self.space = ThresholdSpace(sni, u_space)
-        self.area_space = ThresholdAreaSpace(sni, u_space, self.space)
+        self.area_space = ThresholdAreaSpace(sni, score_space)
     
     def calc_sigmoid(self, x):
         return 1 / (1 + np.exp(-x))
@@ -267,21 +242,36 @@ class Threshold:
 
         return Range(mx=mx, mn=mn)
 
-class SideNegotiatorInfo:
-    def __init__(self, main_negotiator, negid, neg_index, coeff):
-        self.c = main_negotiator.cni
+class BidInfo:
+    def __init__(self, main_negotiator, negid, neg_index):
+        self._cni = main_negotiator.cni
 
         self.side_ufun = main_negotiator.negotiators[negid].context['ufun']
 
-        if not self.c.is_edge:
+        if not self._cni.is_edge:
             self.outcomes = get_outcome_space_from_index(main_negotiator, neg_index)
         else:
             self.outcomes = main_negotiator.ufun.outcome_space.enumerate_or_sample()
             self.outcomes.append(None)
-        self.n_outcomes = len(self.outcomes)
 
-        self.agreements = [get_agreement_at_index(main_negotiator,i) 
-            for i in range(neg_index)]
+    def calc_u(self, bid):
+        if self._cni.is_edge:
+            return self.side_ufun(bid[0])
+        elif self._cni.is_multi_agreement:
+            return self._cni.first_ufun(bid[0])
+        else:
+            return self._cni.ufun(bid)
+
+class SideNegotiatorInfo:
+    def __init__(self, main_negotiator, negid, neg_index, coeff):
+        self.b = BidInfo(main_negotiator, negid, neg_index)
+        self.c = main_negotiator.cni
+
+        if not self.c.is_edge:
+            self.agreements = [get_agreement_at_index(main_negotiator,i) 
+                for i in range(neg_index)]
+        else:
+            self.agreements = []
 
         self.neg_index = neg_index
         self.rest_neg_num = self.c.neg_num - self.neg_index
@@ -294,30 +284,28 @@ class SideNegotiatorInfo:
 class SideNegotiatorStrategy:
     def __init__(self, main_negotiator, negid, neg_index, coeff):
         self.sni = SideNegotiatorInfo(main_negotiator, negid, neg_index, coeff)
-        self.u_space = RivUtilSpace(self.sni)
-        self.threshold = Threshold(self.sni, self.u_space)
+        self.score_space = ScoreSpace(self.sni)
+        self.threshold = Threshold(self.sni, self.score_space)
     
     def proposal(self, state):
         if self.sni.have_to_end_neg:
-            # return [o for o in self.sni.outcomes if o is not None][0]
             return None
         
         th_rng = self.threshold.calc_rng(state)
 
         target_outcomes = []
-        for bid in reversed(self.u_space.descend_bids):
-            u = self.u_space.get(bid)
-            curr_outcome = self.u_space.get_curr_outcome(bid)
-            if u < th_rng.mn:
+        for oc in reversed(self.score_space.descend_accept_outcomes):
+            score = self.score_space.get(oc)
+            if score < th_rng.mn:
                 continue
-            elif u > th_rng.mx:
+            elif score > th_rng.mx:
                 # 緊急エラー対策
                 if len(target_outcomes) == 0:
-                    target_outcomes.append(curr_outcome)
+                    target_outcomes.append(oc)
                 break
             
-            if curr_outcome not in target_outcomes:
-                target_outcomes.append(curr_outcome)
+            if oc not in target_outcomes:
+                target_outcomes.append(oc)
 
         selected_index = np.random.choice(len(target_outcomes))
         return target_outcomes[selected_index]
@@ -327,7 +315,7 @@ class SideNegotiatorStrategy:
             return ResponseType.END_NEGOTIATION
         
         th = self.threshold.calc(state)
-        opponent_u = self.u_space.get_max_by_outcome(state.current_offer)
+        opponent_u = self.score_space.get(state.current_offer)
         if opponent_u >= th:
             return ResponseType.ACCEPT_OFFER
         
@@ -347,7 +335,6 @@ class CenterNegotiationInfo:
         self.init_first_ufun(main_negotiator)
         self.init_is_multi_agreement()
         self.use_outcome = self.is_edge or self.is_multi_agreement
-        self.init_is_sum_agreement(main_negotiator)
         self.init_max_u()
     
     def init_is_edge(self):
@@ -379,30 +366,6 @@ class CenterNegotiationInfo:
             sample_count += 1
             if sample_count >= sample_size:
                 break
-    
-    def init_is_sum_agreement(self, main_negotiator):
-        self.is_sum_agreement = False
-        if self.is_edge:
-            return
-
-        outcomes = get_outcome_space_from_index(main_negotiator, 0)
-        accept_outcomes = [o for o in outcomes if o is not None]
-        worst_outcome = sorted(accept_outcomes, key=lambda o: self.first_ufun(o))[0]
-
-        sample_size, sample_count = 5, 0
-        for i in range(2**(self.neg_num+1)-1):
-            bid = []
-            for j in range(self.neg_num):
-                bid.append(worst_outcome if i < 2**j else None)
-            side_us = [self.first_ufun(o) for i, o in enumerate(bid)]
-            center_u = self.ufun(bid)
-            # 計算誤差を考慮
-            self.is_sum_agreement = center_u-1e-4 < sum(side_us, 0.0) < center_u+1e-4
-            if not self.is_sum_agreement:
-                break
-            sample_count += 1
-            if sample_count >= sample_size:
-                break
 
     def init_max_u(self):
         self.max_u = 0.0
@@ -419,12 +382,10 @@ class RivAgent(ANL2025Negotiator):
         self.side_neg_strategy = None
 
         self.coeff = {
-            'ease_weight': 0.25,         # 0.0 <= ease_weight <= 1.0
-            'concession_weight': 0.1,   # 0.0 <= concession_weight <= 1.0
-            'th_aggressive': 1.5,       # th_aggressive > 0.0
-            # 'th_delta_r': 0.1,          # 0.0 < proposal_delta <= 1.0
-            'th_delta_r': 0.1,          # 0.0 < proposal_delta <= 1.0
-            'n_sample_bids': 3000       # n_sample_bids > 0
+            'opponent_accept_prop': 0.65,    # 0.0 <= opponent_accept_prop <= 1.0
+            'th_min_ratio': 0.6,            # 0.0 <= concession_weight <= 1.0
+            'th_aggressive': 1.5,           # th_aggressive > 0.0
+            'th_delta_r': 0.1,              # 0.0 < proposal_delta <= 1.0
         }
 
         self.cni = CenterNegotiationInfo(self)
@@ -452,8 +413,38 @@ class RivAgent(ANL2025Negotiator):
         return self.side_neg_strategy.respond(state)
 
 if __name__ == "__main__":
-    from .helpers.runner import run_negotiation, run_tournament, run_for_debug, visualize
-    # run_for_debug(RivAgent, small=True)
-    results = run_negotiation(RivAgent)
-    # results = run_tournament(RivAgent)
-    # visualize(results)
+    from anl2025.negotiator import Boulware2025, Random2025, Linear2025, Conceder2025
+
+    do_tournament = False
+
+    if not do_tournament:
+        from .helpers.runner import run_negotiation
+        results = run_negotiation(
+            center_agent = RivAgent,
+            edge_agents = [
+                Random2025,
+                Boulware2025,
+                Linear2025,
+                Conceder2025,
+            ],
+            # scenario_name = 'dinners',
+            # scenario_name = 'target-quantity',
+            scenario_name = 'job-hunt',
+        )
+    
+    else:
+        from .helpers.runner import run_tournament
+        results = run_tournament(
+            my_agent = RivAgent,
+            opponent_agents = [
+                Random2025,
+                Boulware2025,
+                Linear2025,
+                Conceder2025,
+            ],
+            scenario_names = [
+                # 'dinners',
+                'target-quantity',
+                # 'job-hunt'
+            ],
+        )
