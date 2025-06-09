@@ -102,20 +102,20 @@ class RivUtilSpace:
 
         self.end_neg_side_u = self.sni.side_ufun(None) if not self.sni.c.use_outcome else 0.0
 
-        self.bid_tree = OutcomeNode(self.sni, 
-            agreements = sni.agreements, 
-            neg_index = sni.neg_index
-        )
 
         if self.sni.c.use_outcome:
             bids = self.sni.outcomes
         else:
+            bid_tree = OutcomeNode(self.sni, 
+                agreements = sni.agreements, 
+                neg_index = sni.neg_index
+            )
             if self.sni.c.n_bids <= self.sni.coeff['n_sample_bids']:
-                bids = self.bid_tree.get_bids()
+                bids = bid_tree.get_bids()
             else:
                 bids = []
                 sample_size = self.sni.coeff['n_sample_bids'] // self.sni.n_outcomes
-                for child_node in self.bid_tree.children:
+                for child_node in bid_tree.children:
                     child_bids = child_node.get_bids()
                     indices = np.random.choice(len(child_bids), size=sample_size, replace=False)
                     bids += [child_bids[i] for i in indices]
@@ -262,7 +262,11 @@ class SideNegotiatorInfo:
 
         self.side_ufun = main_negotiator.negotiators[negid].context['ufun']
 
-        self.outcomes = get_outcome_space_from_index(main_negotiator, neg_index)
+        if not self.c.is_edge:
+            self.outcomes = get_outcome_space_from_index(main_negotiator, neg_index)
+        else:
+            self.outcomes = main_negotiator.ufun.outcome_space.enumerate_or_sample()
+            self.outcomes.append(None)
         self.n_outcomes = len(self.outcomes)
 
         self.agreements = [get_agreement_at_index(main_negotiator,i) 
@@ -400,7 +404,7 @@ class RivAgent(ANL2025Negotiator):
         set_id_dict(self)
 
         self.current_neg_index = -1
-        self.side_neg_strategies = []
+        self.side_neg_strategy = None
 
         self.coeff = {
             'ease_weight': 0.2,         # 0.0 <= ease_weight <= 1.0
@@ -411,33 +415,28 @@ class RivAgent(ANL2025Negotiator):
         }
 
         self.cni = CenterNegotiationInfo(self)
-
-    @property
-    def current_side_neg_strategy(self):
-        return self.side_neg_strategies[self.current_neg_index]
     
     def update(self, negotiator_id):
         if did_negotiation_end(self):
-            self.side_neg_strategies.append(
+            self.side_neg_strategy = \
                 SideNegotiatorStrategy(
                     main_negotiator = self,
                     negid = negotiator_id, 
                     neg_index = get_current_negotiation_index(self),
                     coeff = self.coeff,
                 )
-            )
 
     def propose(
             self, negotiator_id: str, state: SAOState, dest: str | None = None
     ) -> Outcome | None:
         self.update(negotiator_id)
-        return self.current_side_neg_strategy.proposal(state)
+        return self.side_neg_strategy.proposal(state)
 
     def respond(
             self, negotiator_id: str, state: SAOState, source: str | None = None
     ) -> ResponseType:
         self.update(negotiator_id)
-        return self.current_side_neg_strategy.respond(state)
+        return self.side_neg_strategy.respond(state)
 
 if __name__ == "__main__":
     from .helpers.runner import run_negotiation, run_tournament, run_for_debug, visualize
