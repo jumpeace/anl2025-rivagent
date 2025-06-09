@@ -45,21 +45,23 @@ class Range:
         return f'[{self.mn}~{self.mx}]'
 
 class ScoreTree:
-    def __init__(self, sni, agreements, max_depth, is_root=True):
-        self.bi = sni.b
+    def __init__(self, bi, agreements, max_depth, is_root, opponent_accept_prop):
+        self.bi = bi
 
         self.agreements = agreements
 
         self.depth = len(agreements)
         self.max_depth = max_depth
+        self.is_root = is_root
 
         if not self.is_leaf:
             self.noc2child = {}
             for noc in self.bi.outcomes:
-                child = ScoreTree(sni, 
+                child = ScoreTree(bi,  
                     agreements = self.agreements + [noc],
                     max_depth = self.max_depth,
                     is_root = False,
+                    opponent_accept_prop = opponent_accept_prop,
                 )
                 self.noc2child[str(noc)] = child
 
@@ -76,15 +78,16 @@ class ScoreTree:
             self.descend_nocs = sorted(target_nocs, key=lambda noc: self.get_child(noc).score, reverse=True)
             # print(self.agreements, self.descend_nocs)
 
-            self.noc2prop = {}
-            rest_prop_total = 1.0
-            for i, noc in enumerate(self.descend_nocs):
-                if i + 1 < len(self.descend_nocs):
-                    prop = rest_prop_total * sni.coeff['opponent_accept_prop']
-                    self.noc2prop[str(noc)] = prop
-                    rest_prop_total -= prop
-                else:
-                    self.noc2prop[str(noc)] = rest_prop_total
+            if not self.is_root:
+                self.noc2prop = {}
+                rest_prop_total = 1.0
+                for i, noc in enumerate(self.descend_nocs):
+                    if i + 1 < len(self.descend_nocs):
+                        prop = rest_prop_total * opponent_accept_prop
+                        self.noc2prop[str(noc)] = prop
+                        rest_prop_total -= prop
+                    else:
+                        self.noc2prop[str(noc)] = rest_prop_total
     
     @property
     def is_leaf(self):
@@ -117,18 +120,12 @@ class ScoreTree:
 
 class ScoreSpace:
     def __init__(self, sni):
-        # if self.sni.c.is_edge:
-        #     bid = [None]
-        # else:
-        #     bid = self.sni.agreements + [None] * self.sni.rest_neg_num
-        # self.end_neg_side_u = self.sni.b.calc_u(bid)
-        # print(self.end_neg_side_u)
-
-        self.tree = ScoreTree(sni, 
+        self.tree = ScoreTree(sni.b, 
             agreements = sni.agreements if not sni.c.use_outcome else [],
-            max_depth = sni.c.neg_num if not sni.c.use_outcome else 1
+            max_depth = sni.c.neg_num if not sni.c.use_outcome else 1,
+            is_root = True,
+            opponent_accept_prop = sni.coeff['opponent_accept_prop'],
         )
-
         # print({str(oc): self.get(oc) for oc in self.descend_outcomes})
 
     @property
@@ -382,7 +379,7 @@ class RivAgent(ANL2025Negotiator):
         self.side_neg_strategy = None
 
         self.coeff = {
-            'opponent_accept_prop': 0.65,    # 0.0 <= opponent_accept_prop <= 1.0
+            'opponent_accept_prop': 0.5,    # 0.0 <= opponent_accept_prop <= 1.0
             'th_min_ratio': 0.6,            # 0.0 <= concession_weight <= 1.0
             'th_aggressive': 1.5,           # th_aggressive > 0.0
             'th_delta_r': 0.1,              # 0.0 < proposal_delta <= 1.0
