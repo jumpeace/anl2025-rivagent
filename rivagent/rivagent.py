@@ -100,8 +100,15 @@ class RivUtilSpace:
 
         self.rng = Range(mx=self.sni.c.max_u, mn=0.0)
 
-        self.end_neg_side_u = self.sni.side_ufun(None) if not self.sni.c.use_outcome else 0.0
-
+        if self.sni.c.use_outcome:
+            if self.sni.c.is_multi_agreement:
+                self.end_neg_side_u = self.sni.c.first_ufun(None)
+            else:
+                self.end_neg_side_u = self.sni.side_ufun(None)
+        else:
+            bid = self.sni.agreements + [None] * self.sni.rest_neg_num
+            self.end_neg_side_u = self.sni.c.ufun(bid)
+        # print(self.end_neg_side_u)
 
         if self.sni.c.use_outcome:
             bids = self.sni.outcomes
@@ -137,18 +144,20 @@ class RivUtilSpace:
                     u = self.sni.c.ufun(bid)
                 else:
                     ru = self.sni.c.ufun(bid)
-                    if not self.sni.c.is_sum_agreement:
-                        ease = 1.0 - (calc_n_have_to_accept(bid, start=self.sni.neg_index+1) / (self.sni.rest_neg_num-1))
-                        u = (1.0 - self.sni.coeff['ease_weight']) * ru + self.sni.coeff['ease_weight'] * ease
-                    else:
-                        concession = calc_n_have_to_accept(bid, start=self.sni.neg_index) / self.sni.rest_neg_num
-                        u = (1.0 - self.sni.coeff['concession_weight']) * ru + self.sni.coeff['concession_weight'] * concession
+                    # if not self.sni.c.is_sum_agreement:
+                    ease = 1.0 - (calc_n_have_to_accept(bid, start=self.sni.neg_index+1) / (self.sni.rest_neg_num-1))
+                    u = (1.0 - self.sni.coeff['ease_weight']) * ru + self.sni.coeff['ease_weight'] * ease
+                    # else:
+                    #     concession = calc_n_have_to_accept(bid, start=self.sni.neg_index) / self.sni.rest_neg_num
+                    #     u = (1.0 - self.sni.coeff['concession_weight']) * ru + self.sni.coeff['concession_weight'] * concession
 
             self.bid2u[str(bid)] = u
 
         self.descend_bids = sorted(bids, key=lambda bid: self.bid2u[str(bid)], reverse=True)
         self.descend_accept_bids = [bid for bid in self.descend_bids
             if self.get_curr_outcome(bid) is not None]
+        
+        # print(self.sni.neg_index, {str(bid): self.get(bid) for bid in self.descend_bids})
 
         self.mx_bid_u = self.get(self.descend_accept_bids[0])
         self.outcome_2_max_u = {}
@@ -179,10 +188,12 @@ class CurveArea:
 
 class ThresholdSpace:
     def __init__(self, sni, u_space):
+        r = (sni.c.neg_num - sni.neg_index) / sni.c.neg_num
         self.rng = Range(
             mx = min(u_space.mx_bid_u, u_space.rng.mx),
-            mn = max(u_space.end_neg_side_u, u_space.rng.mx * 0.6)
+            mn = max(u_space.end_neg_side_u, u_space.rng.mx * (0.6 + 0.2 * r))
         )
+        print(self.rng.mx, self.rng.mn)
         sni.set_have_to_end_neg(self.rng.mx <= self.rng.mn)
         
         self.delta = u_space.rng.get_v(r=sni.coeff['th_delta_r'])
@@ -288,7 +299,8 @@ class SideNegotiatorStrategy:
     
     def proposal(self, state):
         if self.sni.have_to_end_neg:
-            return [o for o in self.sni.outcomes if o is not None][0]
+            # return [o for o in self.sni.outcomes if o is not None][0]
+            return None
         
         th_rng = self.threshold.calc_rng(state)
 
@@ -407,9 +419,10 @@ class RivAgent(ANL2025Negotiator):
         self.side_neg_strategy = None
 
         self.coeff = {
-            'ease_weight': 0.2,         # 0.0 <= ease_weight <= 1.0
+            'ease_weight': 0.25,         # 0.0 <= ease_weight <= 1.0
             'concession_weight': 0.1,   # 0.0 <= concession_weight <= 1.0
             'th_aggressive': 1.5,       # th_aggressive > 0.0
+            # 'th_delta_r': 0.1,          # 0.0 < proposal_delta <= 1.0
             'th_delta_r': 0.1,          # 0.0 < proposal_delta <= 1.0
             'n_sample_bids': 3000       # n_sample_bids > 0
         }
@@ -441,6 +454,6 @@ class RivAgent(ANL2025Negotiator):
 if __name__ == "__main__":
     from .helpers.runner import run_negotiation, run_tournament, run_for_debug, visualize
     # run_for_debug(RivAgent, small=True)
-    # results = run_negotiation(RivAgent)
-    results = run_tournament(RivAgent)
+    results = run_negotiation(RivAgent)
+    # results = run_tournament(RivAgent)
     # visualize(results)
