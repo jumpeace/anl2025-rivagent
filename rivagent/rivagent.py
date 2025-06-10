@@ -6,6 +6,7 @@
 This code is free to use or update given that proper attribution is given to
 the authors and the ANAC 2025 ANL competition.
 """
+from collections import defaultdict, Counter
 import itertools
 import random
 from copy import copy
@@ -13,7 +14,8 @@ from copy import copy
 import numpy as np
 
 from .helpers.helperfunctions import get_current_negotiation_index, get_agreement_at_index \
-    , get_number_of_subnegotiations, all_possible_bids_with_agreements_fixed, is_edge_agent
+    , get_number_of_subnegotiations, all_possible_bids_with_agreements_fixed, is_edge_agent \
+    , get_nmi_from_index
 
 from anl2025.negotiator import ANL2025Negotiator
 from negmas import ResponseType
@@ -38,6 +40,12 @@ class Range:
     def __str__(self):
         return f'[{self.mn}~{self.mx}]'
 
+def normalize(ary):
+    total = sum(ary)
+    if total == 0:
+        return [1.0 / len(ary) for x in ary]
+    return [x / total for x in ary]
+
 class Config:
     def __init__(self, agent):
         self.id_dict = {}
@@ -47,16 +55,26 @@ class Config:
         agent.id_dict = self.id_dict
 
         self.coeff = {
-            'oap_init': 0.4,        # 0.0 <= opa_init <= 1.0
-            'oap_gamma': 0.7,       # 0.0 <= oap_gamma <= 1.0
-            'th_min_ratio': 0.5,    # 0.0 <= th_min_ratio <= 1.0
-            'th_aggressive': 1.0,   # th_aggressive > 0.0
-            'th_delta_r': 0.1,      # 0.0 < proposal_delta <= 1.0
+            'pref_gamma': 0.8,          # 0.0 <= pref_gamma <= 1.0
+            'oap_init': 0.4,            # 0.0 <= opa_init <= 1.0
+            'oap_rt_min1': 0.5,         # 0.0 <= opa_needed_rt_min <= 1.0
+            'oap_rt_min2_n_offer': 2.0, # opa_needed_rt_min >= 1.0
+            'oap_min': 0.2,             # 0.0 <= opa_min <= 1.0
+            'oap_max': 0.5,             # 0.0 <= opa_max <= 1.0
+            'oap_gamma': 0.7,           # 0.0 <= oap_gamma <= 1.0
+            'th_min_ratio': 0.5,        # 0.0 <= th_min_ratio <= 1.0
+            'th_aggressive': 1.5,       # th_aggressive > 0.0
+            'th_delta_r': 0.1,          # 0.0 < proposal_delta <= 1.0
         }
 
         self.neg_num = get_number_of_subnegotiations(agent)
 
         self.is_edge = is_edge_agent(agent)
+
+        self.first_neg_index = self.collect_first_neg_index(agent)
+
+        self.n_steps = get_nmi_from_index(agent, self.first_neg_index).n_steps
+
         self.first_side_ufun = self.collect_first_side_ufun(agent)
         self.is_multi_agree = self.collect_is_multi_agree(agent)
         self.use_single_neg = self.is_edge or self.is_multi_agree
@@ -65,17 +83,20 @@ class Config:
         self.n_offers = len(self.all_offers)
         self.all_outcomes = self.all_offers + [None]
         self.n_outcomes = len(self.all_outcomes)
+        self.n_issues = self.collect_n_issues(agent)
+        self.issue_n_values_dict = self.collect_issue_n_values_dict(agent)
+
         self.all_bids = self.collect_all_bids(agent)
         self.n_bids = len(self.all_bids)
 
         self.ufun = self.first_side_ufun if self.use_single_neg else agent.ufun
         self.max_u = max([self.ufun(bid) for bid in self.all_bids])
 
+    def collect_first_neg_index(self, agent):
+        return list(self.id_dict.keys())[0] if self.is_edge else 0
+
     def collect_first_side_ufun(self, agent):
-        if self.is_edge:
-            first_neg_id = list(self.id_dict.values())[0]
-        else:
-            first_neg_id = self.id_dict[0]
+        first_neg_id = self.id_dict[self.first_neg_index]
         return agent.negotiators[first_neg_id].context['ufun']
 
     def collect_is_multi_agree(self, agent):
@@ -85,9 +106,9 @@ class Config:
         sample_size, sample_count = 10, 0
         all_bids_tmp = all_possible_bids_with_agreements_fixed(agent)
         all_accept_bids_tmp = [bid for bid in all_bids_tmp
-            if sum([int(o is not None) for o in bid],0) == self.neg_num]
+            if sum([int(o is not None) for o in bid]) == self.neg_num]
         for bid in all_accept_bids_tmp:
-            if sum([int(o is not None) for o in bid],0) < self.neg_num:
+            if sum([int(o is not None) for o in bid]) < self.neg_num:
                 continue
             side_us = [self.first_side_ufun(o) for i, o in enumerate(bid)]
             center_u = agent.ufun(bid)
@@ -104,6 +125,16 @@ class Config:
             return agent.ufun.outcome_space.enumerate_or_sample()
         else:
             return agent.ufun.outcome_spaces[0].enumerate_or_sample()
+    
+    def collect_n_issues(self, agent):
+        return len(self.all_offers[0])
+    
+    def collect_issue_n_values_dict(self, agent):
+        issue_values_dict = {i: set() for i in range(self.n_issues)}
+        for offer in self.all_offers:
+            for i, value in enumerate(offer):
+                issue_values_dict[i].add(value)
+        return {i: len(issue_values_dict[i]) for i in range(self.n_issues)}
     
     def collect_all_bids(self, agent):
         if self.use_single_neg:
@@ -200,9 +231,8 @@ class ScoreSpace:
             oap = self.calc_decayed_oap_sum(agent)
         )
 
-        # self.end_neg_u = self._config.ufun(None if self._config.use_single_neg else agent.agreements + [None]*agent.rest_neg_num) 
-
-        # print('edge' if self._config.is_edge else 'center', agent.neg_index, self.end_neg_u, {str(oc): f'{float(self.get(oc)):.3f}' for oc in self.descend_outcomes})
+        # print('edge' if self._config.is_edge else 'center', agent.neg_index, {str(oc): f'{float(self.get(oc)):.3f}' for oc in self.descend_outcomes})
+        # print('edge' if self._config.is_edge else 'center', self.calc_decayed_oap_sum(agent))
     
     def calc_decayed_oap_sum(self, agent):
         if len(agent.oap_history) == 0:
@@ -212,7 +242,8 @@ class ScoreSpace:
         for i, oap in enumerate(reversed(agent.oap_history)):
             weighted_sum += gamma ** i * oap
             weight_sum += gamma ** i
-        return weighted_sum / weight_sum
+        ratio = weighted_sum / weight_sum
+        return self._config.coeff['oap_min'] + (self._config.coeff['oap_max']-self._config.coeff['oap_min']) * ratio
 
     @property
     def rng(self):
@@ -290,7 +321,7 @@ class ThresholdAreaSpace:
         else:
             self.areas[-1].rng.mn = score_space.get(score_space.descend_offers[-1])
         
-        self.size = sum([area.rng.size for area in self.areas], 0)
+        self.size = sum([area.rng.size for area in self.areas])
 
         self.areas[0].r_rng.mx = 1.0
         self.areas[-1].r_rng.mn = 0.0
@@ -315,7 +346,8 @@ class Threshold:
         return 1 / (1 + np.exp(-x))
 
     def calc_r_mn(self, state):
-        return 1 - state.relative_time ** (self._config.coeff['th_aggressive'])
+        relative_time = state.step / (self._config.n_steps - 1)
+        return 1 - relative_time ** (self._config.coeff['th_aggressive'])
     
     def calc(self, state):
         r_mn = self.calc_r_mn(state)
@@ -330,26 +362,56 @@ class Threshold:
 
         return Range(mx=mx, mn=mn)
 
-class OpponentModel:
+class OfferModel:
     def __init__(self, agent):
         self._config = agent.config
-        self.offer_history = []
+        self.my_history = []
+        self.opponent_history = []
+        self.my_issue_value_counter = defaultdict(Counter)
+        self.opponent_issue_value_counter = defaultdict(Counter)
     
-    def update_when_proposal(self, step, offer):
-        if step == 0:
-            self.offer_history.append(offer)
+    def update(self, offer, timing):
+        assert timing in ['proposal', 'respond']
+        if offer is None:
+            return
+        
+        if timing == 'proposal':
+            history = self.my_history
+            issue_value_counter = self.my_issue_value_counter
+        elif timing == 'respond':
+            history = self.opponent_history
+            issue_value_counter = self.opponent_issue_value_counter
+
+        history.append(offer)
+        for i, value in enumerate(offer):
+            issue_value_counter[i][value] += 1
     
-    def update_when_respond(self, step, offer):
-        if step == 0:
-            self.offer_history = []
-        self.offer_history.append(offer)
+    def calc_oap(self):
+        return len(set(self.opponent_history)) / self._config.n_offers
     
-    def calc_accept_prop(self):
-        if len(self.offer_history) == 0:
-            n_unique_offers = 1
-        else:
-            n_unique_offers = len(set(self.offer_history))
-        return n_unique_offers / self._config.n_offers
+    def calc_preferences(self, state, offers):
+        opponent_issue_value_score = {i: defaultdict(lambda: 0) for i in range(self._config.n_issues)}
+        for t, offer in enumerate(reversed(self.opponent_history)):
+            base_score = self._config.coeff['pref_gamma'] ** t
+            for i, value in enumerate(offer):
+                opponent_issue_value_score[i][value] += base_score
+        
+        non_norm_weight_dict = {}
+        for i, value_dict in opponent_issue_value_score.items():
+            n_values = self._config.issue_n_values_dict[i]
+            non_norm_weight_dict[i] = 1 - len(value_dict) / n_values
+        weight_dict = {k:v for k,v in
+            zip(non_norm_weight_dict.keys(), normalize(non_norm_weight_dict.values()))}
+        
+        def calc_preference(offer):
+            score = 0
+            for i, value in enumerate(offer):
+                score += weight_dict[i] * opponent_issue_value_score[i][value]
+            return score
+    
+        return np.array(
+            [calc_preference(offer) for offer in offers
+        ], dtype=float)
 
 class RivAgent(ANL2025Negotiator):
     def init(self):
@@ -364,7 +426,10 @@ class RivAgent(ANL2025Negotiator):
         
         # finalize negotiation
         if self.neg_index >= 0:
-            self.oap_history.append(self.opponent_model.calc_accept_prop())
+            total_steps = len(self.offer_model.opponent_history)
+            if total_steps > self.config.n_steps * self.config.coeff['oap_rt_min1']\
+            or total_steps > self.config.n_offers * self.config.coeff['oap_rt_min2_n_offer']:
+                self.oap_history.append(self.offer_model.calc_oap())
         
         # setup negotiation
         self.neg_index = get_current_negotiation_index(self)
@@ -376,7 +441,7 @@ class RivAgent(ANL2025Negotiator):
 
         self.score_space = ScoreSpace(self)
         self.threshold = Threshold(self)
-        self.opponent_model = OpponentModel(self)
+        self.offer_model = OfferModel(self)
 
     def set_have_to_end_neg(self, arg):
         self.have_to_end_neg = arg
@@ -404,11 +469,18 @@ class RivAgent(ANL2025Negotiator):
             
             if offer not in target_offers:
                 target_offers.append(offer)
-
-        selected_index = np.random.choice(len(target_offers))
-        target_offer = target_offers[selected_index]
         
-        self.opponent_model.update_when_proposal(step=state.step, offer=target_offer)
+        if len(target_offers) == 1:
+            target_offer = target_offers[0]
+        else:
+            preferences = self.offer_model.calc_preferences(state, target_offers)
+            if preferences.sum() == 0:
+                selected_index = np.random.choice(len(target_offers))
+            else:
+                selected_index = np.argmax(preferences)
+            target_offer = target_offers[selected_index]
+        
+        self.offer_model.update(target_offer, timing='proposal')
         
         return target_offer
 
@@ -417,7 +489,7 @@ class RivAgent(ANL2025Negotiator):
     ) -> ResponseType:
         self.update_neg_if_needed()
 
-        self.opponent_model.update_when_respond(step=state.step, offer=state.current_offer)
+        self.offer_model.update(state.current_offer, timing='respond')
 
         if self.have_to_end_neg:
             return ResponseType.END_NEGOTIATION
@@ -440,13 +512,14 @@ if __name__ == "__main__":
             center_agent = RivAgent,
             edge_agents = [
                 # Random2025,
-                # Boulware2025,
-                Linear2025,
+                Boulware2025,
+                # Linear2025,
                 # Conceder2025,
             ],
-            # scenario_name = 'dinners',
-            scenario_name = 'target-quantity',
+            scenario_name = 'dinners',
+            # scenario_name = 'target-quantity',
             # scenario_name = 'job-hunt',
+            n_steps = 10,
         )
     
     else:
@@ -462,6 +535,6 @@ if __name__ == "__main__":
             scenario_names = [
                 'dinners',
                 'target-quantity',
-                # 'job-hunt'
+                'job-hunt'
             ],
         )
