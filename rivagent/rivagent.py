@@ -63,7 +63,7 @@ class Config:
             'oap_max': 0.5,             # 0.0 <= opa_max <= 1.0
             'oap_gamma': 0.7,           # 0.0 <= oap_gamma <= 1.0
             'th_min_ratio': 0.5,        # 0.0 <= th_min_ratio <= 1.0
-            'th_aggressive': 1.5,       # th_aggressive > 0.0
+            'th_aggressive': 1.0,       # th_aggressive > 0.0
             'th_delta_r': 0.1,          # 0.0 < proposal_delta <= 1.0
         }
 
