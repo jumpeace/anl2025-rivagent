@@ -47,10 +47,11 @@ class Config:
         agent.id_dict = self.id_dict
 
         self.coeff = {
-            'opponent_accept_prop': 0.5,    # 0.0 <= opponent_accept_prop <= 1.0
-            'th_min_ratio': 0.6,            # 0.0 <=th_min_ratio <= 1.0
-            'th_aggressive': 1.5,           # th_aggressive > 0.0
-            'th_delta_r': 0.1,              # 0.0 < proposal_delta <= 1.0
+            'oap_init': 0.4,        # 0.0 <= opa_init <= 1.0
+            'oap_gamma': 0.7,       # 0.0 <= oap_gamma <= 1.0
+            'th_min_ratio': 0.5,    # 0.0 <= th_min_ratio <= 1.0
+            'th_aggressive': 1.0,   # th_aggressive > 0.0
+            'th_delta_r': 0.1,      # 0.0 < proposal_delta <= 1.0
         }
 
         self.neg_num = get_number_of_subnegotiations(agent)
@@ -111,14 +112,16 @@ class Config:
             return all_possible_bids_with_agreements_fixed(agent)
 
 class ScoreTree:
-    def __init__(self, config, agreements, max_depth, is_root, opponent_accept_prop):
+    def __init__(self, config, agreements, max_depth, is_root, oap):
         self._config = config
-
-        self.agreements = agreements
 
         self.depth = len(agreements)
         self.max_depth = max_depth
         self.is_root = is_root
+
+        self.agreements = agreements
+        if not self.is_root:
+            self.outcome = self.agreements[-1]
 
         if not self.is_leaf:
             self.noc2child = {}
@@ -127,7 +130,7 @@ class ScoreTree:
                     agreements = self.agreements + [noc],
                     max_depth = self.max_depth,
                     is_root = False,
-                    opponent_accept_prop = opponent_accept_prop,
+                    oap = oap,
                 )
                 self.noc2child[str(noc)] = child
 
@@ -148,7 +151,7 @@ class ScoreTree:
                 rest_prop_total = 1.0
                 for i, noc in enumerate(self.descend_nocs):
                     if i + 1 < len(self.descend_nocs):
-                        prop = rest_prop_total * opponent_accept_prop
+                        prop = rest_prop_total * oap
                         self.noc2prop[str(noc)] = prop
                         rest_prop_total -= prop
                     else:
@@ -160,14 +163,16 @@ class ScoreTree:
     
     @property
     def score(self):
+        assert not self.is_root
         if self.is_leaf:
-            bid = self.agreements[0] if self._config.use_single_neg else self.agreements
-            return self._config.ufun(bid)
+            bid = self.outcome if self._config.use_single_neg else self.agreements
+            ret = self._config.ufun(bid)
         else:
             ret = 0.0
             for noc in self.descend_nocs:
                 ret += self.noc2prop[str(noc)] * self.get_child(noc).score
-            return ret
+        
+        return ret
     
     @property
     def max_child_score(self):
@@ -186,22 +191,25 @@ class ScoreTree:
 
 class ScoreSpace:
     def __init__(self, agent):
-        config = agent.config
+        self._config = agent.config
 
-        self.tree = ScoreTree(config, 
-            agreements = [] if config.use_single_neg else agent.agreements,
-            max_depth = 1 if config.use_single_neg else config.neg_num,
+        self.tree = ScoreTree(self._config, 
+            agreements = [] if self._config.use_single_neg else agent.agreements,
+            max_depth = 1 if self._config.use_single_neg else self._config.neg_num,
             is_root = True,
-            opponent_accept_prop = self.calc_opponent_accept_prop(agent),
+            oap = self.calc_decayed_oap_sum(agent)
         )
-        # print({str(oc): self.get(oc) for oc in self.descend_outcomes})
+
+        # self.end_neg_u = self._config.ufun(None if self._config.use_single_neg else agent.agreements + [None]*agent.rest_neg_num) 
+
+        # print('edge' if self._config.is_edge else 'center', agent.neg_index, self.end_neg_u, {str(oc): f'{float(self.get(oc)):.3f}' for oc in self.descend_outcomes})
     
-    def calc_opponent_accept_prop(self, agent):
-        if len(agent.opponent_accept_prop_history) == 0:
-            return 0.6
-        gamma = 0.5
+    def calc_decayed_oap_sum(self, agent):
+        if len(agent.oap_history) == 0:
+            return self._config.coeff['oap_init']
+        gamma = self._config.coeff['oap_gamma']
         weighted_sum, weight_sum = 0.0, 0.0
-        for i, oap in enumerate(agent.opponent_accept_prop_history):
+        for i, oap in enumerate(reversed(agent.oap_history)):
             weighted_sum += gamma ** i * oap
             weight_sum += gamma ** i
         return weighted_sum / weight_sum
@@ -245,7 +253,6 @@ class ThresholdSpace:
             mx = score_space.rng.mx,
             mn = max(score_space.end_neg_score, score_space.rng.mx * config.coeff['th_min_ratio'])
         )
-        # print(self.rng.mx, self.rng.mn)
         agent.set_have_to_end_neg(self.rng.mx <= self.rng.mn)
         if agent.have_to_end_neg:
             return
@@ -328,27 +335,36 @@ class OpponentModel:
         self._config = agent.config
         self.offer_history = []
     
-    def update(self, offer):
+    def update_when_proposal(self, step, offer):
+        if step == 0:
+            self.offer_history.append(offer)
+    
+    def update_when_respond(self, step, offer):
+        if step == 0:
+            self.offer_history = []
         self.offer_history.append(offer)
     
     def calc_accept_prop(self):
-        return len(set(self.offer_history)) / self._config.n_offers
+        if len(self.offer_history) == 0:
+            n_unique_offers = 1
+        else:
+            n_unique_offers = len(set(self.offer_history))
+        return n_unique_offers / self._config.n_offers
 
 class RivAgent(ANL2025Negotiator):
     def init(self):
         self.config = Config(self)
         self.neg_index = -1
 
-        self.opponent_accept_prop_history = []
+        self.oap_history = []
     
-    def update(self):
+    def update_neg_if_needed(self):
         if self.neg_index >= len(self.finished_negotiators):
             return 
         
         # finalize negotiation
         if self.neg_index >= 0:
-            self.opponent_accept_prop_history.append(
-                self.opponent_model.calc_accept_prop())
+            self.oap_history.append(self.opponent_model.calc_accept_prop())
         
         # setup negotiation
         self.neg_index = get_current_negotiation_index(self)
@@ -368,41 +384,47 @@ class RivAgent(ANL2025Negotiator):
     def propose(
             self, negotiator_id: str, state: SAOState, dest: str | None = None
     ) -> Outcome | None:
-        self.update()
+        self.update_neg_if_needed()
 
         if self.have_to_end_neg:
             return None
         
         th_rng = self.threshold.calc_rng(state)
 
-        target_outcomes = []
-        for oc in reversed(self.score_space.descend_offers):
-            score = self.score_space.get(oc)
+        target_offers = []
+        for offer in reversed(self.score_space.descend_offers):
+            score = self.score_space.get(offer)
             if score < th_rng.mn:
                 continue
             elif score > th_rng.mx:
                 # 緊急エラー対策
-                if len(target_outcomes) == 0:
-                    target_outcomes.append(oc)
+                if len(target_offers) == 0:
+                    target_offers.append(offer)
                 break
             
-            if oc not in target_outcomes:
-                target_outcomes.append(oc)
+            if offer not in target_offers:
+                target_offers.append(offer)
 
-        selected_index = np.random.choice(len(target_outcomes))
-        return target_outcomes[selected_index]
+        selected_index = np.random.choice(len(target_offers))
+        target_offer = target_offers[selected_index]
+        
+        self.opponent_model.update_when_proposal(step=state.step, offer=target_offer)
+        
+        return target_offer
 
     def respond(
             self, negotiator_id: str, state: SAOState, source: str | None = None
     ) -> ResponseType:
-        self.update()
+        self.update_neg_if_needed()
+
+        self.opponent_model.update_when_respond(step=state.step, offer=state.current_offer)
 
         if self.have_to_end_neg:
             return ResponseType.END_NEGOTIATION
         
         th = self.threshold.calc(state)
-        opponent_u = self.score_space.get(state.current_offer)
-        if opponent_u >= th:
+        opponent_score = self.score_space.get(state.current_offer)
+        if opponent_score >= th:
             return ResponseType.ACCEPT_OFFER
         
         return ResponseType.REJECT_OFFER
@@ -417,13 +439,13 @@ if __name__ == "__main__":
         results = run_negotiation(
             center_agent = RivAgent,
             edge_agents = [
-                Random2025,
-                Boulware2025,
+                # Random2025,
+                # Boulware2025,
                 Linear2025,
-                Conceder2025,
+                # Conceder2025,
             ],
-            scenario_name = 'dinners',
-            # scenario_name = 'target-quantity',
+            # scenario_name = 'dinners',
+            scenario_name = 'target-quantity',
             # scenario_name = 'job-hunt',
         )
     
@@ -439,7 +461,7 @@ if __name__ == "__main__":
             ],
             scenario_names = [
                 'dinners',
-                # 'target-quantity',
+                'target-quantity',
                 # 'job-hunt'
             ],
         )
