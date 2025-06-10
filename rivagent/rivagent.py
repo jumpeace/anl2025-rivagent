@@ -73,24 +73,20 @@ class Config:
 
         self.first_neg_index = self.collect_first_neg_index(agent)
 
-        self.n_steps = get_nmi_from_index(agent, self.first_neg_index).n_steps
+        # self.n_steps = get_nmi_from_index(agent, self.first_neg_index).n_steps
 
         self.first_side_ufun = self.collect_first_side_ufun(agent)
         self.is_multi_agree = self.collect_is_multi_agree(agent)
         self.use_single_neg = self.is_edge or self.is_multi_agree
 
-        self.all_offers = self.collect_all_offers(agent)
-        self.n_offers = len(self.all_offers)
-        self.all_outcomes = self.all_offers + [None]
-        self.n_outcomes = len(self.all_outcomes)
-        self.n_issues = self.collect_n_issues(agent)
-        self.issue_n_values_dict = self.collect_issue_n_values_dict(agent)
-
-        self.all_bids = self.collect_all_bids(agent)
-        self.n_bids = len(self.all_bids)
+        # self.all_offers = self.collect_all_offers(agent)
+        # self.n_offers = len(self.all_offers)
+        # self.all_outcomes = self.all_offers + [None]
+        # self.n_outcomes = len(self.all_outcomes)
+        # self.n_issues = self.collect_n_issues(agent)
+        # self.issue_n_values_dict = self.collect_issue_n_values_dict(agent)
 
         self.ufun = self.first_side_ufun if self.use_single_neg else agent.ufun
-        self.max_u = max([self.ufun(bid) for bid in self.all_bids])
 
     def collect_first_neg_index(self, agent):
         return list(self.id_dict.keys())[0] if self.is_edge else 0
@@ -120,30 +116,30 @@ class Config:
             if sample_count >= sample_size:
                 return True
     
-    def collect_all_offers(self, agent):
-        if self.is_edge:
-            return agent.ufun.outcome_space.enumerate_or_sample()
-        else:
-            return agent.ufun.outcome_spaces[0].enumerate_or_sample()
+    # def collect_all_offers(self, agent):
+    #     if self.is_edge:
+    #         return agent.ufun.outcome_space.enumerate_or_sample()
+    #     else:
+    #         return agent.ufun.outcome_spaces[0].enumerate_or_sample()
     
-    def collect_n_issues(self, agent):
-        return len(self.all_offers[0])
+    # def collect_n_issues(self, agent):
+    #     return len(self.all_offers[0])
     
-    def collect_issue_n_values_dict(self, agent):
-        issue_values_dict = {i: set() for i in range(self.n_issues)}
-        for offer in self.all_offers:
-            for i, value in enumerate(offer):
-                issue_values_dict[i].add(value)
-        return {i: len(issue_values_dict[i]) for i in range(self.n_issues)}
+    # def collect_issue_n_values_dict(self, agent):
+    #     issue_values_dict = {i: set() for i in range(self.n_issues)}
+    #     for offer in self.all_offers:
+    #         for i, value in enumerate(offer):
+    #             issue_values_dict[i].add(value)
+    #     return {i: len(issue_values_dict[i]) for i in range(self.n_issues)}
     
-    def collect_all_bids(self, agent):
-        if self.use_single_neg:
-            return self.all_outcomes
-        else:
-            return all_possible_bids_with_agreements_fixed(agent)
+    # def collect_all_bids(self, agent):
+    #     if self.use_single_neg:
+    #         return self.all_outcomes
+    #     else:
+    #         return all_possible_bids_with_agreements_fixed(agent)
 
 class ScoreTree:
-    def __init__(self, config, agreements, max_depth, is_root, oap):
+    def __init__(self, config, agreements, max_depth, is_root, all_outcomes, oap):
         self._config = config
 
         self.depth = len(agreements)
@@ -156,12 +152,13 @@ class ScoreTree:
 
         if not self.is_leaf:
             self.noc2child = {}
-            for noc in self._config.all_outcomes:
+            for noc in all_outcomes:
                 child = ScoreTree(config,  
                     agreements = self.agreements + [noc],
                     max_depth = self.max_depth,
                     is_root = False,
                     oap = oap,
+                    all_outcomes = all_outcomes,
                 )
                 self.noc2child[str(noc)] = child
 
@@ -171,7 +168,7 @@ class ScoreTree:
                 return self.get_child(noc).score > self.get_child(None).score
                 
             target_nocs = []
-            for noc in self._config.all_outcomes:
+            for noc in all_outcomes:
                 if judge_append_as_child_fn(noc):
                     target_nocs.append(noc)
             
@@ -228,7 +225,8 @@ class ScoreSpace:
             agreements = [] if self._config.use_single_neg else agent.agreements,
             max_depth = 1 if self._config.use_single_neg else self._config.neg_num,
             is_root = True,
-            oap = self.calc_decayed_oap_sum(agent)
+            oap = self.calc_decayed_oap_sum(agent),
+            all_outcomes = agent.all_outcomes,
         )
 
         # print('edge' if self._config.is_edge else 'center', agent.neg_index, {str(oc): f'{float(self.get(oc)):.3f}' for oc in self.descend_outcomes})
@@ -340,13 +338,14 @@ class ThresholdAreaSpace:
 class Threshold:
     def __init__(self, agent):
         self._config = agent.config
+        self.n_steps = agent.n_steps
         self.area_space = ThresholdAreaSpace(agent)
     
     def calc_sigmoid(self, x):
         return 1 / (1 + np.exp(-x))
 
     def calc_r_mn(self, state):
-        relative_time = state.step / (self._config.n_steps - 1)
+        relative_time = state.step / (self.n_steps - 1)
         return 1 - relative_time ** (self._config.coeff['th_aggressive'])
     
     def calc(self, state):
@@ -365,6 +364,9 @@ class Threshold:
 class OfferModel:
     def __init__(self, agent):
         self._config = agent.config
+        self._n_offers = agent.n_offers
+        self._n_issues = agent.n_issues
+        self._issue_n_values_dict = agent.issue_n_values_dict
         self.my_history = []
         self.opponent_history = []
         self.my_issue_value_counter = defaultdict(Counter)
@@ -387,10 +389,10 @@ class OfferModel:
             issue_value_counter[i][value] += 1
     
     def calc_oap(self):
-        return len(set(self.opponent_history)) / self._config.n_offers
+        return len(set(self.opponent_history)) / self._n_offers
     
     def calc_preferences(self, state, offers):
-        opponent_issue_value_score = {i: defaultdict(lambda: 0) for i in range(self._config.n_issues)}
+        opponent_issue_value_score = {i: defaultdict(lambda: 0) for i in range(self._n_issues)}
         for t, offer in enumerate(reversed(self.opponent_history)):
             base_score = self._config.coeff['pref_gamma'] ** t
             for i, value in enumerate(offer):
@@ -398,7 +400,7 @@ class OfferModel:
         
         non_norm_weight_dict = {}
         for i, value_dict in opponent_issue_value_score.items():
-            n_values = self._config.issue_n_values_dict[i]
+            n_values = self._issue_n_values_dict[i]
             non_norm_weight_dict[i] = 1 - len(value_dict) / n_values
         weight_dict = {k:v for k,v in
             zip(non_norm_weight_dict.keys(), normalize(non_norm_weight_dict.values()))}
@@ -418,6 +420,8 @@ class RivAgent(ANL2025Negotiator):
         self.config = Config(self)
         self.neg_index = -1
 
+        self.max_u = 0.0
+
         self.oap_history = []
     
     def update_neg_if_needed(self):
@@ -427,17 +431,38 @@ class RivAgent(ANL2025Negotiator):
         # finalize negotiation
         if self.neg_index >= 0:
             total_steps = len(self.offer_model.opponent_history)
-            if total_steps > self.config.n_steps * self.config.coeff['oap_rt_min1']\
-            or total_steps > self.config.n_offers * self.config.coeff['oap_rt_min2_n_offer']:
+            if total_steps > self.n_steps * self.config.coeff['oap_rt_min1']\
+            or total_steps > self.n_offers * self.config.coeff['oap_rt_min2_n_offer']:
                 self.oap_history.append(self.offer_model.calc_oap())
         
         # setup negotiation
         self.neg_index = get_current_negotiation_index(self)
         self.rest_neg_num = self.config.neg_num - self.neg_index
 
+        self.n_steps = get_nmi_from_index(self, self.config.first_neg_index).n_steps \
+            if self.config.is_edge else get_nmi_from_index(self, self.neg_index).n_steps
+
         if not self.config.is_edge:
             self.agreements = [get_agreement_at_index(self, i) 
                 for i in range(self.neg_index)]
+        self.all_offers = self.ufun.outcome_space.enumerate_or_sample() if self.config.is_edge \
+            else self.ufun.outcome_spaces[self.neg_index].enumerate_or_sample()
+        self.n_offers = len(self.all_offers)
+        self.all_outcomes = self.all_offers + [None]
+        self.n_outcomes = len(self.all_outcomes)
+        self.n_issues = len(self.all_offers[0])
+
+        issue_values_dict = {i: set() for i in range(self.n_issues)}
+        for offer in self.all_offers:
+            for i, value in enumerate(offer):
+                issue_values_dict[i].add(value)
+        self.issue_n_values_dict = {i: len(issue_values_dict[i]) for i in range(self.n_issues)}
+
+        self.all_bids = self.all_outcomes if self.config.use_single_neg \
+            else all_possible_bids_with_agreements_fixed(self)
+        self.n_bids = len(self.all_bids)
+
+        self.max_u = max(max([self.config.ufun(bid) for bid in self.all_bids]), self.max_u)
 
         self.score_space = ScoreSpace(self)
         self.threshold = Threshold(self)
