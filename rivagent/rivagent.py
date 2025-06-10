@@ -56,7 +56,7 @@ class Config:
 
         self.coeff = {
             'pref_gamma': 0.8,          # 0.0 <= pref_gamma <= 1.0
-            'oap_init': 0.4,            # 0.0 <= opa_init <= 1.0
+            'oap_init': 0.5,            # 0.0 <= opa_init <= 1.0
             'oap_rt_min1': 0.5,         # 0.0 <= opa_needed_rt_min <= 1.0
             'oap_rt_min2_n_offer': 2.0, # opa_needed_rt_min >= 1.0
             'oap_min': 0.2,             # 0.0 <= opa_min <= 1.0
@@ -76,6 +76,8 @@ class Config:
         # self.n_steps = get_nmi_from_index(agent, self.first_neg_index).n_steps
 
         self.first_side_ufun = self.collect_first_side_ufun(agent)
+        self.center_ufun = lambda bid: agent.ufun.eval_with_expected(bid, use_expected=False)
+
         self.is_multi_agree = self.collect_is_multi_agree(agent)
         self.use_single_neg = self.is_edge or self.is_multi_agree
 
@@ -85,8 +87,8 @@ class Config:
         # self.n_outcomes = len(self.all_outcomes)
         # self.n_issues = self.collect_n_issues(agent)
         # self.issue_n_values_dict = self.collect_issue_n_values_dict(agent)
-
-        self.ufun = self.first_side_ufun if self.use_single_neg else agent.ufun
+    
+        self.ufun = self.first_side_ufun if self.use_single_neg else self.center_ufun
 
     def collect_first_neg_index(self, agent):
         return list(self.id_dict.keys())[0] if self.is_edge else 0
@@ -107,7 +109,7 @@ class Config:
             if sum([int(o is not None) for o in bid]) < self.neg_num:
                 continue
             side_us = [self.first_side_ufun(o) for i, o in enumerate(bid)]
-            center_u = agent.ufun(bid)
+            center_u = self.center_ufun(bid)
             
             if np.max(side_us) != center_u:
                 return False
@@ -229,10 +231,13 @@ class ScoreSpace:
             all_outcomes = agent.all_outcomes,
         )
 
-        # print('edge' if self._config.is_edge else 'center', agent.neg_index, {str(oc): f'{float(self.get(oc)):.3f}' for oc in self.descend_outcomes})
-        # print('edge' if self._config.is_edge else 'center', self.calc_decayed_oap_sum(agent))
+        # if not self._config.is_edge:
+        #     score_dict = {str(oc): f"{float(self.get(oc)):.3f}" for oc in self.descend_outcomes}
+        #     print(f'[{agent.neg_index}] agree: {agent.agreements}(u={self._config.ufun(agent.agreements + [None]*agent.rest_neg_num)}), scores: {score_dict}')
     
     def calc_decayed_oap_sum(self, agent):
+        return self._config.coeff['oap_init']
+
         if len(agent.oap_history) == 0:
             return self._config.coeff['oap_init']
         gamma = self._config.coeff['oap_gamma']
@@ -552,14 +557,14 @@ if __name__ == "__main__":
         results = run_tournament(
             my_agent = RivAgent,
             opponent_agents = [
-                Random2025,
-                Boulware2025,
+                # Random2025,
+                # Boulware2025,
                 Linear2025,
-                Conceder2025,
+                # Conceder2025,
             ],
             scenario_names = [
                 'dinners',
-                'target-quantity',
-                'job-hunt'
+                # 'target-quantity',
+                # 'job-hunt'
             ],
         )
