@@ -55,17 +55,20 @@ class Config:
         agent.id_dict = self.id_dict
 
         self.coeff = {
-            'branch_end_neg_prop': 0.9,     # 0.0 <= branch_end_neg_prop <= 1.0
-            'pref_gamma': 0.8,              # 0.0 <= pref_gamma <= 1.0
-            'oap_init': 0.5,                # 0.0 <= opa_init <= 1.0
-            'oap_rt_min1': 0.25,            # 0.0 <= opa_needed_rt_min <= 1.0
-            'oap_rt_min2_n_offer': 2.0,     # opa_needed_rt_min >= 1.0
-            'oap_min': 0.45,                # 0.0 <= opa_min <= 1.0
-            'oap_max': 0.55,                # 0.0 <= opa_max <= 1.0
-            'oap_gamma': 0.5,               # 0.0 <= oap_gamma <= 1.0
-            'th_min_ratio': 0.5,            # 0.0 <= th_min_ratio <= 1.0
-            'th_aggressive': 1.5,           # th_aggressive > 0.0
-            'th_delta_r': 0.1,              # 0.0 < proposal_delta <= 1.0
+            'branch_end_neg_prop': 0.9,      # 0.0 <= branch_end_neg_prop <= 1.0
+            'pref_gamma': 0.8,               # 0.0 <= pref_gamma <= 1.0
+            'oap_init': 0.5,                 # 0.0 <= opa_init <= 1.0
+            'oap_rt_min1': 0.25,             # 0.0 <= opa_needed_rt_min <= 1.0
+            'oap_rt_min2_n_offer': 2.0,      # opa_needed_rt_min >= 1.0
+            'oap_min': 0.45,                 # 0.0 <= opa_min <= 1.0
+            'oap_max': 0.55,                 # 0.0 <= opa_max <= 1.0
+            'oap_gamma': 0.5,                # 0.0 <= oap_gamma <= 1.0
+            'opp_aggressive_window_size': 5, # 1 <= opp_aggressive_window_size <= n_steps
+            'opp_aggressive_th': 1,          # 1 <= opp_aggressive_th <= opp_aggressive_window_size
+            'th_min_ratio': 0.5,             # 0.0 <= th_min_ratio <= 1.0
+            'th_exp_aggressive': 1.7,        # th_exp_aggressive > 0.0
+            'th_exp_concession': 1.3,        # th_exp_concession > 0.0
+            'th_delta_r': 0.1,               # 0.0 < proposal_delta <= 1.0
         }
 
         self.neg_num = get_number_of_subnegotiations(agent)
@@ -326,16 +329,21 @@ class ThresholdAreaSpace:
     
 class Threshold:
     def __init__(self, agent):
-        self._config = agent.config
-        self.n_steps = agent.n_steps
+        self._n_steps = agent.n_steps
         self.area_space = ThresholdAreaSpace(agent)
+        self._config = agent.config
+    
+    def set_opponent_model(self, arg):
+        self._opponent_model = arg
     
     def calc_sigmoid(self, x):
         return 1 / (1 + np.exp(-x))
 
     def calc_r_mn(self, state):
-        relative_time = state.step / (self.n_steps - 1)
-        return 1 - relative_time ** (self._config.coeff['th_aggressive'])
+        relative_time = state.step / (self._n_steps - 1)
+        th_exp = self._config.coeff['th_exp_concession'] \
+            if self._opponent_model.judge_aggressive() else self._config.coeff['th_exp_aggressive']
+        return 1 - relative_time ** (self._config.coeff['th_exp_aggressive'])
     
     def calc(self, state):
         r_mn = self.calc_r_mn(state)
@@ -388,6 +396,12 @@ class OpponentModel:
             preferences.append(preference)
 
         return np.array(preferences, dtype=float)
+    
+    def judge_aggressive(self):
+        window_size = self._config.coeff['opp_aggressive_window_size']
+        if len(self.offer_history) < window_size:
+            return False
+        return len(set(self.offer_history[-window_size:])) <= self._config.coeff['opp_aggressive_th']
 
 class RivAgent(ANL2025Negotiator):
     def init(self):
@@ -441,6 +455,7 @@ class RivAgent(ANL2025Negotiator):
         self.score_space = ScoreSpace(self)
         self.threshold = Threshold(self)
         self.opponent_model = OpponentModel(self)
+        self.threshold.set_opponent_model(self.opponent_model)
 
     def set_have_to_end_neg(self, arg):
         self.have_to_end_neg = arg
@@ -524,14 +539,14 @@ if __name__ == "__main__":
         results = run_tournament(
             my_agent = RivAgent,
             opponent_agents = [
-                # Random2025,
+                Random2025,
                 Boulware2025,
                 Linear2025,
-                # Conceder2025,
+                Conceder2025,
             ],
             scenario_names = [
-                'dinners',
-                'target-quantity',
-                # 'job-hunt'
+                # 'dinners',
+                # 'target-quantity',
+                'job-hunt'
             ],
         )
