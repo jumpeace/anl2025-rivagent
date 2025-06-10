@@ -216,13 +216,6 @@ class ScoreSpace:
             oap = self.calc_decayed_oap_sum(agent),
             all_outcomes = agent.all_outcomes,
         )
-
-        # if not self._config.use_single_neg:
-        #     score_dict = {str(oc): f"{float(self.get(oc)):.3f}" for oc in self.descend_outcomes}
-        #     print(f'[{agent.neg_index}] agree: {agent.agreements}(u={self._config.ufun(agent.agreements + [None]*agent.rest_neg_num)}), oap={self.calc_decayed_oap_sum(agent)}, scores: {score_dict}')
-        # elif self._config.is_multi_agree:
-        #     score_dict = {str(oc): f"{float(self.get(oc)):.3f}" for oc in self.descend_outcomes}
-        #     print(f'[{agent.neg_index}] scores: {score_dict}')
     
     def calc_decayed_oap_sum(self, agent):
         if len(agent.oap_history) == 0:
@@ -512,41 +505,3 @@ class RivAgent(ANL2025Negotiator):
             return ResponseType.ACCEPT_OFFER
         
         return ResponseType.REJECT_OFFER
-
-if __name__ == "__main__":
-    from anl2025.negotiator import Boulware2025, Random2025, Linear2025, Conceder2025
-
-    do_tournament = True
-
-    if not do_tournament:
-        from .helpers.runner import run_negotiation
-        results = run_negotiation(
-            center_agent = RivAgent,
-            edge_agents = [
-                # Random2025,
-                # Boulware2025,
-                Linear2025,
-                # Conceder2025,
-            ],
-            # scenario_name = 'dinners',
-            # scenario_name = 'target-quantity',
-            scenario_name = 'job-hunt',
-            n_steps = 10,
-        )
-    
-    else:
-        from .helpers.runner import run_tournament
-        results = run_tournament(
-            my_agent = RivAgent,
-            opponent_agents = [
-                Random2025,
-                Boulware2025,
-                Linear2025,
-                Conceder2025,
-            ],
-            scenario_names = [
-                # 'dinners',
-                # 'target-quantity',
-                'job-hunt'
-            ],
-        )
