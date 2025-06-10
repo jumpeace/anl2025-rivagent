@@ -55,16 +55,17 @@ class Config:
         agent.id_dict = self.id_dict
 
         self.coeff = {
-            'pref_gamma': 0.8,          # 0.0 <= pref_gamma <= 1.0
-            'oap_init': 0.5,            # 0.0 <= opa_init <= 1.0
-            'oap_rt_min1': 0.5,         # 0.0 <= opa_needed_rt_min <= 1.0
-            'oap_rt_min2_n_offer': 2.0, # opa_needed_rt_min >= 1.0
-            'oap_min': 0.2,             # 0.0 <= opa_min <= 1.0
-            'oap_max': 0.5,             # 0.0 <= opa_max <= 1.0
-            'oap_gamma': 0.7,           # 0.0 <= oap_gamma <= 1.0
-            'th_min_ratio': 0.5,        # 0.0 <= th_min_ratio <= 1.0
-            'th_aggressive': 1.0,       # th_aggressive > 0.0
-            'th_delta_r': 0.1,          # 0.0 < proposal_delta <= 1.0
+            'branch_end_neg_prop': 0.9,     # 0.0 <= branch_end_neg_prop <= 1.0
+            'pref_gamma': 0.8,              # 0.0 <= pref_gamma <= 1.0
+            'oap_init': 0.5,                # 0.0 <= opa_init <= 1.0
+            'oap_rt_min1': 0.25,            # 0.0 <= opa_needed_rt_min <= 1.0
+            'oap_rt_min2_n_offer': 2.0,     # opa_needed_rt_min >= 1.0
+            'oap_min': 0.45,                # 0.0 <= opa_min <= 1.0
+            'oap_max': 0.55,                # 0.0 <= opa_max <= 1.0
+            'oap_gamma': 0.5,               # 0.0 <= oap_gamma <= 1.0
+            'th_min_ratio': 0.5,            # 0.0 <= th_min_ratio <= 1.0
+            'th_aggressive': 1.5,           # th_aggressive > 0.0
+            'th_delta_r': 0.1,              # 0.0 < proposal_delta <= 1.0
         }
 
         self.neg_num = get_number_of_subnegotiations(agent)
@@ -73,22 +74,18 @@ class Config:
 
         self.first_neg_index = self.collect_first_neg_index(agent)
 
-        # self.n_steps = get_nmi_from_index(agent, self.first_neg_index).n_steps
-
         self.first_side_ufun = self.collect_first_side_ufun(agent)
         self.center_ufun = lambda bid: agent.ufun.eval_with_expected(bid, use_expected=False)
 
         self.is_multi_agree = self.collect_is_multi_agree(agent)
         self.use_single_neg = self.is_edge or self.is_multi_agree
 
-        # self.all_offers = self.collect_all_offers(agent)
-        # self.n_offers = len(self.all_offers)
-        # self.all_outcomes = self.all_offers + [None]
-        # self.n_outcomes = len(self.all_outcomes)
-        # self.n_issues = self.collect_n_issues(agent)
-        # self.issue_n_values_dict = self.collect_issue_n_values_dict(agent)
-    
-        self.ufun = self.first_side_ufun if self.use_single_neg else self.center_ufun
+        if self.is_edge:
+            self.ufun = self.first_side_ufun
+        elif self.is_multi_agree:
+            self.ufun = lambda outcome: self.center_ufun([outcome]+[None]*(self.neg_num-1))
+        else:
+            self.ufun = self.center_ufun
 
     def collect_first_neg_index(self, agent):
         return list(self.id_dict.keys())[0] if self.is_edge else 0
@@ -117,28 +114,6 @@ class Config:
             sample_count += 1
             if sample_count >= sample_size:
                 return True
-    
-    # def collect_all_offers(self, agent):
-    #     if self.is_edge:
-    #         return agent.ufun.outcome_space.enumerate_or_sample()
-    #     else:
-    #         return agent.ufun.outcome_spaces[0].enumerate_or_sample()
-    
-    # def collect_n_issues(self, agent):
-    #     return len(self.all_offers[0])
-    
-    # def collect_issue_n_values_dict(self, agent):
-    #     issue_values_dict = {i: set() for i in range(self.n_issues)}
-    #     for offer in self.all_offers:
-    #         for i, value in enumerate(offer):
-    #             issue_values_dict[i].add(value)
-    #     return {i: len(issue_values_dict[i]) for i in range(self.n_issues)}
-    
-    # def collect_all_bids(self, agent):
-    #     if self.use_single_neg:
-    #         return self.all_outcomes
-    #     else:
-    #         return all_possible_bids_with_agreements_fixed(agent)
 
 class ScoreTree:
     def __init__(self, config, agreements, max_depth, is_root, all_outcomes, oap):
@@ -151,6 +126,14 @@ class ScoreTree:
         self.agreements = agreements
         if not self.is_root:
             self.outcome = self.agreements[-1]
+        
+        if self._config.is_edge:
+            self.reserved_value = self._config.ufun(None)
+        elif self._config.is_multi_agree:
+            self.reserved_value = self._config.ufun(None)
+        else:
+            self.reserved_value = self._config.ufun(self.agreements+[None]*(self.max_depth-self.depth))
+
 
         if not self.is_leaf:
             self.noc2child = {}
@@ -196,13 +179,14 @@ class ScoreTree:
         assert not self.is_root
         if self.is_leaf:
             bid = self.outcome if self._config.use_single_neg else self.agreements
-            ret = self._config.ufun(bid)
+            return self._config.ufun(bid)
         else:
             ret = 0.0
             for noc in self.descend_nocs:
                 ret += self.noc2prop[str(noc)] * self.get_child(noc).score
-        
-        return ret
+            if len(self.descend_nocs) > 1 and self.outcome is None:
+                ret *=  self._config.coeff['branch_end_neg_prop']
+            return ret
     
     @property
     def max_child_score(self):
@@ -213,8 +197,7 @@ class ScoreTree:
     @property
     def end_neg_child_score(self):
         assert not self.is_leaf
-        noc = self.descend_nocs[-1]
-        return self.get_child(noc).score
+        return self.get_child(None).score
     
     def get_child(self, noc):
         return self.noc2child[str(noc)]
@@ -231,13 +214,14 @@ class ScoreSpace:
             all_outcomes = agent.all_outcomes,
         )
 
-        # if not self._config.is_edge:
+        # if not self._config.use_single_neg:
         #     score_dict = {str(oc): f"{float(self.get(oc)):.3f}" for oc in self.descend_outcomes}
-        #     print(f'[{agent.neg_index}] agree: {agent.agreements}(u={self._config.ufun(agent.agreements + [None]*agent.rest_neg_num)}), scores: {score_dict}')
+        #     print(f'[{agent.neg_index}] agree: {agent.agreements}(u={self._config.ufun(agent.agreements + [None]*agent.rest_neg_num)}), oap={self.calc_decayed_oap_sum(agent)}, scores: {score_dict}')
+        # elif self._config.is_multi_agree:
+        #     score_dict = {str(oc): f"{float(self.get(oc)):.3f}" for oc in self.descend_outcomes}
+        #     print(f'[{agent.neg_index}] scores: {score_dict}')
     
     def calc_decayed_oap_sum(self, agent):
-        return self._config.coeff['oap_init']
-
         if len(agent.oap_history) == 0:
             return self._config.coeff['oap_init']
         gamma = self._config.coeff['oap_gamma']
@@ -366,59 +350,44 @@ class Threshold:
 
         return Range(mx=mx, mn=mn)
 
-class OfferModel:
+class OpponentModel:
     def __init__(self, agent):
         self._config = agent.config
         self._n_offers = agent.n_offers
         self._n_issues = agent.n_issues
         self._issue_n_values_dict = agent.issue_n_values_dict
-        self.my_history = []
-        self.opponent_history = []
-        self.my_issue_value_counter = defaultdict(Counter)
-        self.opponent_issue_value_counter = defaultdict(Counter)
+        self.offer_history = []
     
-    def update(self, offer, timing):
-        assert timing in ['proposal', 'respond']
+    def update(self, offer):
         if offer is None:
             return
-        
-        if timing == 'proposal':
-            history = self.my_history
-            issue_value_counter = self.my_issue_value_counter
-        elif timing == 'respond':
-            history = self.opponent_history
-            issue_value_counter = self.opponent_issue_value_counter
-
-        history.append(offer)
-        for i, value in enumerate(offer):
-            issue_value_counter[i][value] += 1
+        self.offer_history.append(offer)
     
     def calc_oap(self):
-        return len(set(self.opponent_history)) / self._n_offers
+        return len(set(self.offer_history)) / self._n_offers
     
-    def calc_preferences(self, state, offers):
-        opponent_issue_value_score = {i: defaultdict(lambda: 0) for i in range(self._n_issues)}
-        for t, offer in enumerate(reversed(self.opponent_history)):
+    def calc_preferences(self, target_offers):
+        issue_value_score = {i: defaultdict(lambda: 0) for i in range(self._n_issues)}
+        for t, offer in enumerate(reversed(self.offer_history)):
             base_score = self._config.coeff['pref_gamma'] ** t
             for i, value in enumerate(offer):
-                opponent_issue_value_score[i][value] += base_score
+                issue_value_score[i][value] += base_score
         
         non_norm_weight_dict = {}
-        for i, value_dict in opponent_issue_value_score.items():
+        for i, value_dict in issue_value_score.items():
             n_values = self._issue_n_values_dict[i]
             non_norm_weight_dict[i] = 1 - len(value_dict) / n_values
         weight_dict = {k:v for k,v in
             zip(non_norm_weight_dict.keys(), normalize(non_norm_weight_dict.values()))}
         
-        def calc_preference(offer):
-            score = 0
+        preferences = []
+        for offer in target_offers:
+            preference = 0.0
             for i, value in enumerate(offer):
-                score += weight_dict[i] * opponent_issue_value_score[i][value]
-            return score
-    
-        return np.array(
-            [calc_preference(offer) for offer in offers
-        ], dtype=float)
+                preference += weight_dict[i] * issue_value_score[i][value]
+            preferences.append(preference)
+
+        return np.array(preferences, dtype=float)
 
 class RivAgent(ANL2025Negotiator):
     def init(self):
@@ -435,10 +404,10 @@ class RivAgent(ANL2025Negotiator):
         
         # finalize negotiation
         if self.neg_index >= 0:
-            total_steps = len(self.offer_model.opponent_history)
+            total_steps = len(self.opponent_model.offer_history)
             if total_steps > self.n_steps * self.config.coeff['oap_rt_min1']\
             or total_steps > self.n_offers * self.config.coeff['oap_rt_min2_n_offer']:
-                self.oap_history.append(self.offer_model.calc_oap())
+                self.oap_history.append(self.opponent_model.calc_oap())
         
         # setup negotiation
         self.neg_index = get_current_negotiation_index(self)
@@ -471,7 +440,7 @@ class RivAgent(ANL2025Negotiator):
 
         self.score_space = ScoreSpace(self)
         self.threshold = Threshold(self)
-        self.offer_model = OfferModel(self)
+        self.opponent_model = OpponentModel(self)
 
     def set_have_to_end_neg(self, arg):
         self.have_to_end_neg = arg
@@ -503,14 +472,12 @@ class RivAgent(ANL2025Negotiator):
         if len(target_offers) == 1:
             target_offer = target_offers[0]
         else:
-            preferences = self.offer_model.calc_preferences(state, target_offers)
+            preferences = self.opponent_model.calc_preferences(target_offers)
             if preferences.sum() == 0:
                 selected_index = np.random.choice(len(target_offers))
             else:
                 selected_index = np.argmax(preferences)
             target_offer = target_offers[selected_index]
-        
-        self.offer_model.update(target_offer, timing='proposal')
         
         return target_offer
 
@@ -519,7 +486,7 @@ class RivAgent(ANL2025Negotiator):
     ) -> ResponseType:
         self.update_neg_if_needed()
 
-        self.offer_model.update(state.current_offer, timing='respond')
+        self.opponent_model.update(state.current_offer)
 
         if self.have_to_end_neg:
             return ResponseType.END_NEGOTIATION
@@ -542,13 +509,13 @@ if __name__ == "__main__":
             center_agent = RivAgent,
             edge_agents = [
                 # Random2025,
-                Boulware2025,
-                # Linear2025,
+                # Boulware2025,
+                Linear2025,
                 # Conceder2025,
             ],
-            scenario_name = 'dinners',
+            # scenario_name = 'dinners',
             # scenario_name = 'target-quantity',
-            # scenario_name = 'job-hunt',
+            scenario_name = 'job-hunt',
             n_steps = 10,
         )
     
@@ -558,13 +525,13 @@ if __name__ == "__main__":
             my_agent = RivAgent,
             opponent_agents = [
                 # Random2025,
-                # Boulware2025,
+                Boulware2025,
                 Linear2025,
                 # Conceder2025,
             ],
             scenario_names = [
                 'dinners',
-                # 'target-quantity',
+                'target-quantity',
                 # 'job-hunt'
             ],
         )
