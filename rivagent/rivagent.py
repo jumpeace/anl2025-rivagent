@@ -6,7 +6,6 @@
 This code is free to use or update given that proper attribution is given to
 the authors and the ANAC 2025 ANL competition.
 """
-from collections import defaultdict, Counter
 import itertools
 import random
 from copy import copy
@@ -85,18 +84,25 @@ class ScoreNode:
                     agreements = self.agreements + [next_outcome]
                 )
                 self.next_outcome_2_child[str(next_outcome)] = child
-
-            def judge_append_as_child_fn(next_outcome):
-                if next_outcome is None:
-                    return True
-                return self.get_child(next_outcome).score > self.get_child(None).score
                 
             target_next_outcomes = []
             for next_outcome in self.all_next_outcomes:
-                if judge_append_as_child_fn(next_outcome):
+                if self.judge_append_as_child(next_outcome):
                     target_next_outcomes.append(next_outcome)
-            
-            self.descend_next_outcomes = sorted(target_next_outcomes, key=lambda next_outcome: self.get_child(next_outcome).score, reverse=True)
+
+            self.descend_next_outcomes = []
+            for curr_next_outcome in target_next_outcomes:
+                curr_score = self.get_child(curr_next_outcome).score
+
+                insert_index = len(self.descend_next_outcomes)
+                while insert_index > 0:
+                    compared_next_outcome = self.descend_next_outcomes[insert_index-1]
+                    compared_score = self.get_child(compared_next_outcome).score
+                    if curr_score <= compared_score:
+                        break
+                    insert_index -= 1
+                
+                self.descend_next_outcomes.insert(insert_index, curr_next_outcome)
 
             if not self.is_root:
                 self.next_outcome_2_prob = {}
@@ -109,6 +115,11 @@ class ScoreNode:
                     else:
                         self.next_outcome_2_prob[str(next_outcome)] = rest_prob_total
     
+    def judge_append_as_child(self, next_outcome):
+        if next_outcome is None:
+            return True
+        return self.get_child(next_outcome).score > self.get_child(None).score
+
     @property
     def score(self):
         assert not self.is_root
@@ -294,10 +305,13 @@ class OpponentModel:
         return len(set(self.offer_history)) / self.agent.n_offers
     
     def calc_preferences(self, target_offers):
-        issue_value_score = {i: defaultdict(lambda: 0) for i in range(self.agent.n_issues)}
+        issue_value_score = {i: {value: 0.0 for value in values} 
+            for i, values in self.agent.issue_values_dict.items()}
         for t, offer in enumerate(reversed(self.offer_history)):
             base_score = self.agent.coeff['pref_gamma'] ** t
             for i, value in enumerate(offer):
+                if value not in issue_value_score[i].keys():
+                    issue_value_score[i][value] = 0.0
                 issue_value_score[i][value] += base_score
         
         non_norm_weight_dict = {}
@@ -353,7 +367,6 @@ class RivAgent(ANL2025Negotiator):
         self.first_neg_index = self.collect_first_neg_index()
 
         self.first_side_ufun = self.collect_first_side_ufun()
-        self.center_ufun = lambda bid: self.ufun.eval_with_expected(bid, use_expected=False)
 
         self.is_multi_agree = self.collect_is_multi_agree()
         self.use_single_neg = self.is_edge or self.is_multi_agree
@@ -419,11 +432,16 @@ class RivAgent(ANL2025Negotiator):
         return len(self.get_all_offers(self.neg_index)[0])
     
     @property
-    def issue_n_values_dict(self):
+    def issue_values_dict(self):
         issue_values_dict = {i: set() for i in range(self.n_issues)}
         for offer in self.get_all_offers(self.neg_index):
             for i, value in enumerate(offer):
                 issue_values_dict[i].add(value)
+        return issue_values_dict
+
+    @property
+    def issue_n_values_dict(self):
+        issue_values_dict = self.issue_values_dict
         return {i: len(issue_values_dict[i]) for i in range(self.n_issues)}
     
     @property
@@ -438,6 +456,9 @@ class RivAgent(ANL2025Negotiator):
         assert not self.is_edge
         return [get_agreement_at_index(self, i)
             for i in range(self.neg_index)]
+    
+    def center_ufun(self, bid):
+        return self.ufun.eval_with_expected(bid, use_expected=False)
 
     def my_ufun(self, bid):
         if self.is_edge:
@@ -466,7 +487,6 @@ class RivAgent(ANL2025Negotiator):
         self.score_space = ScoreSpace(self)
         self.threshold = Threshold(self)
         self.opponent_model = OpponentModel(self)
-        # self.threshold.set_opponent_model(self.opponent_model)
 
     def set_have_to_end_neg(self, arg):
         self.have_to_end_neg = arg
@@ -527,7 +547,7 @@ class RivAgent(ANL2025Negotiator):
 if __name__ == "__main__":
     from anl2025.negotiator import Boulware2025, Random2025, Linear2025, Conceder2025
 
-    do_tournament = False
+    do_tournament = True
 
     if not do_tournament:
         from .helpers.runner import run_negotiation
@@ -556,8 +576,8 @@ if __name__ == "__main__":
                 Conceder2025,
             ],
             scenario_names = [
-                # 'dinners',
-                'target-quantity',
+                'dinners',
+                # 'target-quantity',
                 # 'job-hunt'
             ],
         )
