@@ -150,13 +150,6 @@ class ScoreRoot(ScoreNode):
 class ScoreSpace:
     def __init__(self, agent):
         self.root = ScoreRoot(agent, oap=self.collect_decayed_oap_sum(agent))
-
-        # if not self.agent.use_single_neg:
-        #     score_dict = {str(oc): f"{float(self.get(oc)):.3f}" for oc in self.descend_outcomes}
-        #     print(f'[{self.agent.neg_index}] agree: {self.agent.agreements}(u={self.my_ufun(self.agent.agreements + [None]*self.agent.rest_neg_num)}), oap={self.calc_decayed_oap_sum(agent)}, scores: {score_dict}')
-        # elif self.agent.is_multi_agree:
-        #     score_dict = {str(oc): f"{float(self.get(oc)):.3f}" for oc in self.descend_outcomes}
-        #     print(f'[{self.agent.neg_index}] scores: {score_dict}')
     
     def collect_decayed_oap_sum(self, agent):
         if len(agent.oap_history) == 0:
