@@ -66,7 +66,7 @@ def run_negotiation(center_agent, edge_agents, scenario_name, n_steps = 10):
 
     return results
 
-def run_tournament(my_agent, opponent_agents, scenario_names):
+def run_tournament(my_agent, opponent_agents, scenario_names, n_test):
     scenario_dict = {
         'dinners': MultidealScenario.from_folder(pathlib.Path("./official_test_scenarios/dinners")),
         'target-quantity': MultidealScenario.from_folder(pathlib.Path("./official_test_scenarios/TargetQuantity_example")),
@@ -75,15 +75,45 @@ def run_tournament(my_agent, opponent_agents, scenario_names):
     scenarios = [scenario_dict[name] for name in scenario_names]
     competitors = [my_agent] + opponent_agents
 
-    results = anl2025_tournament(
-        scenarios=scenarios,
-        n_jobs=-1,
-        competitors=competitors,
-        verbose=False,
-        #  no_double_scores=False,
-    )
-    print({k:f'{v:.3f}' for k,v in sorted(results.final_scores.items(), key=lambda x: x[1], reverse=True)})
-    print({k:f'{v:.3f}' for k,v in sorted(results.weighted_average.items(), key=lambda x: x[1], reverse=True)})
+    results_history = []
+    while len(results_history) < n_test:
+        try:
+            results = anl2025_tournament(
+                scenarios=scenarios,
+                n_jobs=-1,
+                competitors=competitors,
+                verbose=False,
+                #  no_double_scores=False,
+            )
+        except Exception:
+            continue
+        results_history.append(results)
+    
+    import numpy as np
+    import pandas as pd
+
+    keys = results_history[0].final_scores.keys()
+    final_scores = {k:[] for k in keys}
+    weighted_average = {k:[] for k in keys}
+    for results in results_history:
+        for k in keys:
+            final_scores[k].append(results.final_scores[k])
+            weighted_average[k].append(results.weighted_average[k])
+    
+    for k in keys:
+        fn1 = lambda value: f'{value:.3f}'
+        fn2 = lambda values: {
+            'min': fn1(np.min(values)),
+            'Q1': fn1(pd.Series(values).quantile(0.25)),
+            'mean': fn1(np.mean(values)),
+            'Q3': fn1(pd.Series(values).quantile(0.75)),
+            'max': fn1(np.max(values)),
+            'std': fn1(np.mean(values)),
+        }
+        print(f'{k}:', {
+            'final_scores': fn2(final_scores[k]),
+            'weighted_average': fn2(weighted_average[k]),
+        })
 
     return results
 

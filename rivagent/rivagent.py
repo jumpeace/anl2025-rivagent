@@ -576,8 +576,9 @@ if __name__ == "__main__":
                 Conceder2025,
             ],
             scenario_names = [
-                'dinners',
+                # 'dinners',
                 # 'target-quantity',
-                # 'job-hunt'
+                'job-hunt'
             ],
+            n_test = 600
         )
